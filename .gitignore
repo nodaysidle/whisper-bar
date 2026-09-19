@@ -1,0 +1,21 @@
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+dist/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# IDE & Temporary
+.idea/
+*.swp
+*~
+*.app
+*.dmg
+*.sha256
