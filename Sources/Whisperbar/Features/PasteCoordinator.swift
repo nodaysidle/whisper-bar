@@ -139,9 +139,7 @@ struct SystemFocusedTargetCapture: FocusedTargetCapturing {
         guard let application = NSRunningApplication(processIdentifier: target.processIdentifier),
               !application.isTerminated
         else { return false }
-        guard target.hasEditableSelectedTextBoundary else { return true }
-        guard let element = Self.focusedElement(forProcess: target.processIdentifier) else { return false }
-        return Self.isSelectedTextSettable(element)
+        return true
     }
 
     private static func focusedElement(forProcess pid: Int32) -> AXUIElement? {
@@ -249,11 +247,24 @@ struct SystemTargetActivator: TargetActivating {
         guard let application = NSRunningApplication(processIdentifier: target.processIdentifier) else {
             return false
         }
-        return application.activate(options: [])
+        let success = application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        return success || application.isActive
     }
 
     func isFrontmost(_ target: InsertionTarget) -> Bool {
-        NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier {
+            return true
+        }
+        for _ in 0..<10 {
+            usleep(25_000)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier {
+                return true
+            }
+        }
+        if let application = NSRunningApplication(processIdentifier: target.processIdentifier), application.isActive {
+            return true
+        }
+        return false
     }
 }
 
@@ -272,6 +283,7 @@ struct SystemCommandVPresser: CommandVPressing {
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
         keyDown.post(tap: .cghidEventTap)
+        usleep(30_000)
         keyUp.post(tap: .cghidEventTap)
         return true
     }
@@ -374,6 +386,8 @@ final class PasteCoordinator: TerminationReleasing {
         return [.copy, .preview, .retry]
     }
 
+    var restoreClipboard: Bool
+
     // MARK: Dependencies
 
     private let targetCapture: FocusedTargetCapturing
@@ -397,7 +411,8 @@ final class PasteCoordinator: TerminationReleasing {
         clipboardAvailability: @escaping @MainActor () -> PermissionState = { .authorized },
         waitForPasteConsumption: @escaping @Sendable (Int) async -> Void = { milliseconds in
             try? await Task.sleep(for: .milliseconds(Int64(milliseconds)))
-        }
+        },
+        restoreClipboard: Bool = true
     ) {
         self.targetCapture = targetCapture
         self.accessibilityInserter = accessibilityInserter
@@ -408,6 +423,7 @@ final class PasteCoordinator: TerminationReleasing {
         self.requestAccessibilityTrust = requestAccessibilityTrust
         self.clipboardAvailability = clipboardAvailability
         self.waitForPasteConsumption = waitForPasteConsumption
+        self.restoreClipboard = restoreClipboard
     }
 
     // MARK: Step 1 — capture at recording start
@@ -597,18 +613,24 @@ final class PasteCoordinator: TerminationReleasing {
         // never been determined; a denial is never re-prompted.
         let availability = await resolvedAccessibilityAvailability()
         guard availability == .authorized else {
-            return failAccessibilityManualPath()
+            return failAccessibilityManualPath(candidateText: candidate.text)
         }
 
         // Step 4 — the captured target must remain valid for its captured
         // process identifier; a later-focused application never substitutes.
         guard let target = capturedTarget else {
+            if !restoreClipboard {
+                _ = pasteboard.writeText(candidate.text)
+            }
             return fail(
                 .noCapturedTarget,
                 message: "No insertion target was captured at recording start, so nothing was inserted; the complete transcript is preserved for copy, preview, or an explicit retry."
             )
         }
         guard targetCapture.isTargetStillValid(target) else {
+            if !restoreClipboard {
+                _ = pasteboard.writeText(candidate.text)
+            }
             return fail(
                 .targetNoLongerAvailable,
                 message: "The captured application is no longer available, so nothing was inserted; the complete transcript is preserved for copy, preview, or an explicit retry."
@@ -619,6 +641,9 @@ final class PasteCoordinator: TerminationReleasing {
         // NSPasteboard access at all.
         if target.hasEditableSelectedTextBoundary,
            accessibilityInserter.insertViaSelectedText(candidate.text, into: target) {
+            if !restoreClipboard {
+                _ = pasteboard.writeText(candidate.text)
+            }
             finishSuccess(
                 path: .directAccessibility,
                 notice: "Inserted the complete transcript directly into the focused app."
@@ -650,33 +675,55 @@ final class PasteCoordinator: TerminationReleasing {
         // Step 8 — reactivate the captured application and verify it became
         // frontmost; a failed activation stops before any synthetic key event.
         guard activator.activate(target), activator.isFrontmost(target) else {
-            let disposition = restoreOwnedClipboard(
-                snapshot: snapshot,
-                postWriteChangeCount: postWriteChangeCount
-            )
-            lastRestoreOutcome = disposition
-            return fail(
-                .activationFailed,
-                message: "The captured application could not be reactivated, so no synthetic paste was sent; \(Self.clipboardDispositionText(disposition)) and the complete transcript is preserved for copy, preview, or an explicit retry."
-            )
+            if restoreClipboard {
+                let disposition = restoreOwnedClipboard(
+                    snapshot: snapshot,
+                    postWriteChangeCount: postWriteChangeCount
+                )
+                lastRestoreOutcome = disposition
+                return fail(
+                    .activationFailed,
+                    message: "The captured application could not be reactivated, so no synthetic paste was sent; \(Self.clipboardDispositionText(disposition)) and the complete transcript is preserved for copy, preview, or an explicit retry."
+                )
+            } else {
+                return fail(
+                    .activationFailed,
+                    message: "The captured application could not be reactivated, so no synthetic paste was sent. The complete transcript was copied to your clipboard so you can paste with ⌘V."
+                )
+            }
         }
 
         // Step 9 — exactly one Command-V, only after verified activation.
         guard commandVPressing.synthesizeCommandV() else {
-            let disposition = restoreOwnedClipboard(
-                snapshot: snapshot,
-                postWriteChangeCount: postWriteChangeCount
-            )
-            lastRestoreOutcome = disposition
-            return fail(
-                .syntheticPasteFailed,
-                message: "The synthetic Command-V could not be sent, so nothing was pasted; \(Self.clipboardDispositionText(disposition)) and the complete transcript is preserved for copy, preview, or an explicit retry."
-            )
+            if restoreClipboard {
+                let disposition = restoreOwnedClipboard(
+                    snapshot: snapshot,
+                    postWriteChangeCount: postWriteChangeCount
+                )
+                lastRestoreOutcome = disposition
+                return fail(
+                    .syntheticPasteFailed,
+                    message: "The synthetic Command-V could not be sent, so nothing was pasted; \(Self.clipboardDispositionText(disposition)) and the complete transcript is preserved for copy, preview, or an explicit retry."
+                )
+            } else {
+                return fail(
+                    .syntheticPasteFailed,
+                    message: "The synthetic Command-V could not be sent, so nothing was pasted. The complete transcript was copied to your clipboard so you can paste with ⌘V."
+                )
+            }
         }
 
         // Step 10 — bounded documented wait for the target to consume the
         // paste.
         await waitForPasteConsumption(Self.pasteConsumptionWaitMilliseconds)
+
+        if !restoreClipboard {
+            finishSuccess(
+                path: .clipboardFallback,
+                notice: "Inserted the complete transcript and kept it on the clipboard."
+            )
+            return true
+        }
 
         // Steps 11–12 — restore only while this app still owns the clipboard;
         // newer external clipboard content is never overwritten.
@@ -736,8 +783,11 @@ final class PasteCoordinator: TerminationReleasing {
     /// CON-PERMISSION-ACCESSIBILITY denied behavior: skip privileged control
     /// and keep the documented manual path. The clipboard's prior content is
     /// left untouched until an explicit user copy action.
-    private func failAccessibilityManualPath() -> Bool {
-        fail(
+    private func failAccessibilityManualPath(candidateText: String? = nil) -> Bool {
+        if !restoreClipboard, let text = candidateText {
+            _ = pasteboard.writeText(text)
+        }
+        return fail(
             .accessibilityDenied,
             message: "Accessibility access is not granted, so nothing was inserted. The complete transcript is preserved for manual copy, preview, or an explicit retry after enabling Accessibility access."
         )

@@ -310,6 +310,8 @@ actor DataStore {
     private enum SettingsKey {
         static let provider = "whisperbar.settings.v1.provider"
         static let hotkeys = "whisperbar.settings.v1.hotkeys"
+        static let useFnKey = "whisperbar.settings.v1.use_fn_key"
+        static let restoreClipboard = "whisperbar.settings.v1.restore_clipboard"
     }
 
     private static let schemaVersion: Int32 = 1
@@ -754,10 +756,32 @@ actor DataStore {
         userDefaults.set(data, forKey: SettingsKey.hotkeys)
     }
 
+    func useFnKeyForPushToTalk() -> Bool {
+        if userDefaults.object(forKey: SettingsKey.useFnKey) == nil {
+            return true
+        }
+        return userDefaults.bool(forKey: SettingsKey.useFnKey)
+    }
+
+    func setUseFnKeyForPushToTalk(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: SettingsKey.useFnKey)
+    }
+
+    func restoreClipboardAfterPaste() -> Bool {
+        // Defaults to false: keeps transcript on clipboard so manual paste works
+        userDefaults.bool(forKey: SettingsKey.restoreClipboard)
+    }
+
+    func setRestoreClipboardAfterPaste(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: SettingsKey.restoreClipboard)
+    }
+
     /// Explicit reset behavior for versioned lightweight keys (ARD "Settings placement").
     func resetLightweightSettings() {
         userDefaults.removeObject(forKey: SettingsKey.provider)
         userDefaults.removeObject(forKey: SettingsKey.hotkeys)
+        userDefaults.removeObject(forKey: SettingsKey.useFnKey)
+        userDefaults.removeObject(forKey: SettingsKey.restoreClipboard)
     }
 
     // MARK: Temporary audio (CON-DATA-TEMPORARY-AUDIO-RECORDING, CON-PERSISTENCE-TEMPORARY-AUDIO-RECORDING)

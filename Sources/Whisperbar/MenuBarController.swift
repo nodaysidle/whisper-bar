@@ -453,6 +453,18 @@ final class MenuBarController {
     /// Value-free launch-at-login feedback.
     private(set) var launchAtLoginFeedback: String?
 
+    // MARK: Fn (Globe) key & clipboard preservation
+    private var flagsMonitor: Any?
+    private var localFlagsMonitor: Any?
+    private var isFnKeyDown: Bool = false
+    private var isFnRecordingActive: Bool = false
+
+    /// Whether the Fn (Globe) key acts as a push-to-talk key.
+    private(set) var useFnKeyForPushToTalk: Bool = false
+
+    /// Whether the previous clipboard is restored after auto-paste.
+    private(set) var restoreClipboardAfterPaste: Bool = false
+
     /// The one awaitable record/stop/cancel action the composition root runs
     /// for a session signal (shortcut or in-app control). In-app controls await
     /// it, so a control reflects the settled session state instead of racing it.
@@ -719,6 +731,10 @@ final class MenuBarController {
         syncHistoryPresentation()
         syncPastePresentation(notice: nil)
         launchAtLoginStatus = lifecycleCoordinator.launchAtLoginStatus
+        useFnKeyForPushToTalk = await dataStore.useFnKeyForPushToTalk()
+        restoreClipboardAfterPaste = await dataStore.restoreClipboardAfterPaste()
+        pasteCoordinator.restoreClipboard = restoreClipboardAfterPaste
+        setupFlagsMonitor()
         await refreshRefinementPresentation()
     }
 
@@ -741,6 +757,7 @@ final class MenuBarController {
 
     private func performTerminationRelease() async {
         statusText = "Terminating"
+        stopFlagsMonitoring()
         // Stop new session work first: no frame delivery, pump, or route send
         // outlives termination.
         let streamingDriver = streamingSessionTask
@@ -1548,9 +1565,10 @@ final class MenuBarController {
     /// settled, so a fresh install can dictate from the menu or Settings
     /// without any shortcut being configured.
     @discardableResult
-    func startInAppRecording() async -> Bool {
+    func startInAppRecording(mode: HotkeyMode? = nil) async -> Bool {
         guard !isRecordingSessionInFlight else { return false }
-        guard globalHotkeysFeature.beginInAppRecording(mode: inAppRecordingMode) else { return false }
+        let effectiveMode = mode ?? inAppRecordingMode
+        guard globalHotkeysFeature.beginInAppRecording(mode: effectiveMode) else { return false }
         await settleSessionAction()
         return isRecordingSessionActive
     }
@@ -1766,6 +1784,7 @@ final class MenuBarController {
     static let shiftModifier: UInt32 = 512
     static let optionModifier: UInt32 = 2048
     static let controlModifier: UInt32 = 4096
+    static let hyperModifier: UInt32 = controlModifier | optionModifier | shiftModifier | commandModifier
 
     /// The deterministic safe default a fresh install can apply in one action:
     /// control+option plus two distinct keys, so the combination can never
@@ -1773,6 +1792,13 @@ final class MenuBarController {
     static let safeDefaultHotkeyConfiguration = HotkeyConfiguration(
         pushToTalk: HotkeyIdentifier(keyCode: 2, modifiers: controlModifier | optionModifier),
         toggle: HotkeyIdentifier(keyCode: 17, modifiers: controlModifier | optionModifier)
+    )
+
+    /// Karabiner Hyperkey preset (Control + Option + Shift + Command):
+    /// Hyper+D for push-to-talk, Hyper+T for toggle.
+    static let karabinerHyperkeyConfiguration = HotkeyConfiguration(
+        pushToTalk: HotkeyIdentifier(keyCode: 2, modifiers: hyperModifier),
+        toggle: HotkeyIdentifier(keyCode: 17, modifiers: hyperModifier)
     )
 
     /// The editable key choices of the shortcut editor: Carbon virtual key
@@ -1834,6 +1860,77 @@ final class MenuBarController {
     @discardableResult
     func useSafeDefaultHotkeys() async -> Bool {
         await applyHotkeyConfiguration(Self.safeDefaultHotkeyConfiguration)
+    }
+
+    /// Explicit user action: applies the Karabiner Hyperkey configuration
+    /// (⌃⌥⇧⌘D for push-to-talk, ⌃⌥⇧⌘T for toggle).
+    @discardableResult
+    func useKarabinerHyperkeyPreset() async -> Bool {
+        await applyHotkeyConfiguration(Self.karabinerHyperkeyConfiguration)
+    }
+
+    /// Explicit user action: configures whether the Fn (Globe) key is used for push-to-talk.
+    func setUseFnKeyForPushToTalk(_ enabled: Bool) async {
+        useFnKeyForPushToTalk = enabled
+        await dataStore.setUseFnKeyForPushToTalk(enabled)
+    }
+
+    /// Explicit user action: configures whether to restore previous clipboard after auto-paste.
+    func setRestoreClipboardAfterPaste(_ restore: Bool) async {
+        restoreClipboardAfterPaste = restore
+        pasteCoordinator.restoreClipboard = restore
+        await dataStore.setRestoreClipboardAfterPaste(restore)
+    }
+
+    // MARK: - Fn (Globe) Key Listener (Push-to-Talk)
+
+    func setupFlagsMonitor() {
+        stopFlagsMonitoring()
+        flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleFlagsChanged(event: event)
+            }
+        }
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleFlagsChanged(event: event)
+            }
+            return event
+        }
+    }
+
+    func stopFlagsMonitoring() {
+        if let monitor = flagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            flagsMonitor = nil
+        }
+        if let local = localFlagsMonitor {
+            NSEvent.removeMonitor(local)
+            localFlagsMonitor = nil
+        }
+    }
+
+    private func handleFlagsChanged(event: NSEvent) {
+        guard useFnKeyForPushToTalk else { return }
+        let isFnEvent = event.keyCode == 63 || event.modifierFlags.contains(.function)
+        guard isFnEvent else { return }
+
+        let fnPressed = event.modifierFlags.contains(.function)
+        if fnPressed && !isFnKeyDown {
+            isFnKeyDown = true
+            isFnRecordingActive = true
+            Task { @MainActor [weak self] in
+                _ = await self?.startInAppRecording(mode: .pushToTalk)
+            }
+        } else if !fnPressed && isFnKeyDown {
+            isFnKeyDown = false
+            if isFnRecordingActive {
+                isFnRecordingActive = false
+                Task { @MainActor [weak self] in
+                    _ = await self?.stopInAppRecording()
+                }
+            }
+        }
     }
 
     /// Explicit user action: retries the last attempted configuration after a
@@ -2262,7 +2359,11 @@ final class MenuBarController {
         case .notConfigured, .failed:
             completed = .succeeded(finalTranscript: outcome.rawTranscript, refinedText: nil)
         }
-        return await pasteCoordinator.requestInsertion(from: completed)
+        let inserted = await pasteCoordinator.requestInsertion(from: completed)
+        if !inserted && pasteCoordinator.mode != .preview {
+            _ = pasteCoordinator.copyRetainedTranscript()
+        }
+        return inserted
     }
 
     // MARK: View builders (kept here so later phases never touch App/Settings files)
@@ -2984,12 +3085,6 @@ struct HotkeysSettingsView: View {
                 LabeledContent("Push-to-talk", value: MenuBarController.describeHotkey(controller.hotkeyConfiguration.pushToTalk))
                 LabeledContent("Toggle", value: MenuBarController.describeHotkey(controller.hotkeyConfiguration.toggle))
                 HStack {
-                    Button("Use safe defaults (⌃⌥D / ⌃⌥T)") {
-                        Task { _ = await controller.useSafeDefaultHotkeys() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.hotkeySafeDefault)
-                    .accessibilityLabel("Use the safe default shortcuts")
-
                     Button("Retry registration") {
                         Task { _ = await controller.retryHotkeyRegistration() }
                     }
@@ -3007,6 +3102,36 @@ struct HotkeysSettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            Section("Presets") {
+                HStack(spacing: 12) {
+                    Button("Safe defaults (⌃⌥D / ⌃⌥T)") {
+                        Task { _ = await controller.useSafeDefaultHotkeys() }
+                    }
+                    .accessibilityIdentifier(MenuControlID.hotkeySafeDefault)
+                    .accessibilityLabel("Use the safe default shortcuts")
+
+                    Button("Karabiner Hyperkey (⌃⌥⇧⌘T / ⌃⌥⇧⌘D)") {
+                        Task { _ = await controller.useKarabinerHyperkeyPreset() }
+                    }
+                    .accessibilityLabel("Use Karabiner Hyperkey shortcuts")
+                }
+                Text("Hyperkey preset sets ⌃⌥⇧⌘T for toggle mode and ⌃⌥⇧⌘D for push-to-talk (standard Karabiner ⌃⌥⇧⌘ mapping).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Fn (Globe) Key Push-to-Talk") {
+                Toggle("Use Fn (Globe) key for Push-to-Talk", isOn: Binding(
+                    get: { controller.useFnKeyForPushToTalk },
+                    set: { newValue in
+                        Task { await controller.setUseFnKeyForPushToTalk(newValue) }
+                    }
+                ))
+                Text("Press and hold the Fn (Globe) key to speak, release to finish and paste. Works alongside global hotkeys.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Push-to-talk shortcut") {
@@ -3091,6 +3216,11 @@ struct HotkeyEditorRow: View {
                 modifierToggle("⌥", flag: MenuBarController.optionModifier, name: "Option")
                 modifierToggle("⇧", flag: MenuBarController.shiftModifier, name: "Shift")
                 modifierToggle("⌘", flag: MenuBarController.commandModifier, name: "Command")
+                Button("Set Hyper (⌃⌥⇧⌘)") {
+                    modifiers = MenuBarController.hyperModifier
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
             }
 
             Picker("Key", selection: $keyCode) {
@@ -3393,6 +3523,18 @@ struct PasteSettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            Section("Clipboard behavior") {
+                Toggle("Restore previous clipboard after auto-paste", isOn: Binding(
+                    get: { controller.restoreClipboardAfterPaste },
+                    set: { newValue in
+                        Task { await controller.setRestoreClipboardAfterPaste(newValue) }
+                    }
+                ))
+                Text("When disabled (default), the transcript remains on your clipboard so you can manually press ⌘V in apps like Antinote that reject synthetic paste events.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Preview and recovery") {
