@@ -58,6 +58,12 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppWire.controller?.applicationDidFinishLaunching()
+        AppWire.controller?.openMainWindow()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppWire.controller?.openMainWindow()
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -705,6 +711,9 @@ final class MenuBarController {
             lastErrorMessage = "Startup did not complete during \(reason). Nothing privileged was started; retry explicitly."
         }
         syncProviderPresentation()
+        if hotkeyConfiguration.isEmpty {
+            _ = await useSafeDefaultHotkeys()
+        }
         syncHotkeyPresentation()
         syncWritingPresentation()
         syncHistoryPresentation()
@@ -2260,6 +2269,30 @@ final class MenuBarController {
 
     func settingsView() -> some View {
         SettingsRoot(controller: self)
+    }
+
+    private var mainWindowController: NSWindowController?
+
+    func openMainWindow() {
+        if let window = mainWindowController?.window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "WhisperBar"
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: SettingsWindow(controller: self))
+        let wc = NSWindowController(window: window)
+        mainWindowController = wc
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
