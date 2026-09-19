@@ -2375,8 +2375,11 @@ final class MenuBarController {
     private var mainWindowController: NSWindowController?
 
     func openMainWindow() {
+        NSApp.setActivationPolicy(.regular)
         if let window = mainWindowController?.window {
+            window.center()
             window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -2386,14 +2389,25 @@ final class MenuBarController {
             backing: .buffered,
             defer: false
         )
-        window.title = "WhisperBar"
+        window.title = "WhisperBar Settings"
         window.center()
+        window.delegate = SettingsWindowDelegate.shared
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: SettingsWindow(controller: self))
         let wc = NSWindowController(window: window)
         mainWindowController = wc
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+@MainActor
+final class SettingsWindowDelegate: NSObject, NSWindowDelegate {
+    static let shared = SettingsWindowDelegate()
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 
