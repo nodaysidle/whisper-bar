@@ -696,7 +696,8 @@ final class MenuBarController {
         }
         routing.onHudNotice = { [weak self] notice in
             self?.statusText = notice
-            self?.microphoneCaptureFeature.showStatusPill(notice)
+            let delay: TimeInterval? = notice.contains("Refining") ? nil : 1.8
+            self?.microphoneCaptureFeature.showStatusPill(notice, autoDismissDelay: delay)
         }
         // The input device, the buffer sink, and the non-activating floating
         // HUD panel are released before termination completes.
@@ -1372,6 +1373,7 @@ final class MenuBarController {
             microphoneCaptureFeature.showStatusPill(notice)
         } else {
             statusText = "Ready"
+            microphoneCaptureFeature.clearStatusPill()
         }
     }
 

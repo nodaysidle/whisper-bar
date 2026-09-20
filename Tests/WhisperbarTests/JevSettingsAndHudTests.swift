@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Whisperbar
 
-@Suite("JevSettingsAndHudTests — TypeSafe Jev Settings & Minimalist HUD Badges")
+@Suite("JevSettingsAndHudTests — TypeSafe Jev Settings & Minimalist HUD Badges", .serialized)
 struct JevSettingsAndHudTests {
 
     // MARK: - DataStore Persistence Tests
@@ -138,6 +138,49 @@ struct JevSettingsAndHudTests {
         // Clear status pill hides HUD when not recording
         feature.clearStatusPill()
         #expect(feature.currentStatusPill == nil)
+        #expect(hudPresenter.latest?.isVisible == false)
+    }
+
+    @Test("HUD status pill auto-dismisses and resets cleanly on subsequent recording start")
+    @MainActor
+    func hudStatusPillAutoDismissAndResetOnCapture() async throws {
+        let hudPresenter = FakeHudPresenter()
+        let feature = MicrophoneCaptureAndFloatingHudFeature(
+            capture: FakeMicrophoneCapture(),
+            hudPresenter: hudPresenter
+        )
+
+        // 1. Test auto-dismiss with short delay
+        feature.showStatusPill("⚡ Instant Paste", autoDismissDelay: 0.05)
+        #expect(hudPresenter.latest?.isVisible == true)
+        #expect(hudPresenter.latest?.statusPill == "⚡ Instant Paste")
+        #expect(feature.currentStatusPill == "⚡ Instant Paste")
+
+        // Wait for auto-dismiss timer
+        for _ in 0..<30 {
+            if feature.currentStatusPill == nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(feature.currentStatusPill == nil)
+        #expect(hudPresenter.latest?.isVisible == false)
+
+        // 2. Test that startCapture resets status pill immediately and cancels auto-dismiss
+        feature.showStatusPill("🛡️ Ignored phantom audio", autoDismissDelay: 2.0)
+        #expect(hudPresenter.latest?.isVisible == true)
+        #expect(hudPresenter.latest?.statusPill == "🛡️ Ignored phantom audio")
+        #expect(feature.currentStatusPill == "🛡️ Ignored phantom audio")
+
+        // Immediately start a new recording session
+        let started = await feature.startCapture(mode: .pushToTalk)
+        #expect(started == true)
+        #expect(feature.isRecording == true)
+        #expect(feature.currentStatusPill == nil)
+        #expect(hudPresenter.latest?.isVisible == true)
+        #expect(hudPresenter.latest?.phase == .recording)
+        #expect(hudPresenter.latest?.statusPill == nil)
+
+        // Clean up
+        _ = await feature.stopCapture()
         #expect(hudPresenter.latest?.isVisible == false)
     }
 

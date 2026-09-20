@@ -748,6 +748,7 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
     /// conversion and no callback outlives a terminal path.
     private var bufferContinuation: AsyncStream<MicrophoneInputBuffer>.Continuation?
     private var bufferIngestionTask: Task<Void, Never>?
+    private var autoDismissPillTask: Task<Void, Never>?
 
     init(
         capture: MicrophoneCapturing = SystemMicrophoneCapture(),
@@ -856,6 +857,10 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
             return false
         }
 
+        autoDismissPillTask?.cancel()
+        autoDismissPillTask = nil
+        currentStatusPill = nil
+
         lastRequestedMode = mode
         activeMode = mode
         lastFailure = nil
@@ -954,6 +959,9 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
     /// Explicit dismissal of a visible HUD (for example a failed session).
     /// The last valid state is preserved so an explicit retry stays possible.
     func dismissHud() {
+        autoDismissPillTask?.cancel()
+        autoDismissPillTask = nil
+        currentStatusPill = nil
         guard hudSnapshot.isVisible else { return }
         publishHud(isVisible: false, phase: hudSnapshot.phase, message: hudSnapshot.message)
     }
@@ -982,7 +990,9 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
 
     // MARK: HUD status pill & badges
 
-    func showStatusPill(_ pill: String) {
+    func showStatusPill(_ pill: String, autoDismissDelay: TimeInterval? = 1.8) {
+        autoDismissPillTask?.cancel()
+        autoDismissPillTask = nil
         currentStatusPill = pill
         hudSnapshot = CaptureHudSnapshot(
             isVisible: true,
@@ -995,12 +1005,27 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
             statusPill: pill
         )
         hudPresenter.present(hudSnapshot)
+
+        if let autoDismissDelay, autoDismissDelay > 0 {
+            autoDismissPillTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(autoDismissDelay * 1_000_000_000))
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.clearStatusPill()
+            }
+        }
     }
 
     func clearStatusPill() {
+        autoDismissPillTask?.cancel()
+        autoDismissPillTask = nil
+        guard currentStatusPill != nil else { return }
         currentStatusPill = nil
         if !isRecording {
-            publishHud(isVisible: false, phase: .idle)
+            publishHud(isVisible: false, phase: .finished)
         }
     }
 
@@ -1010,6 +1035,8 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
     /// buffer sink, and hide the HUD so no capture resource outlives the
     /// process.
     func releaseForTermination() async {
+        autoDismissPillTask?.cancel()
+        autoDismissPillTask = nil
         state = .idle
         activeMode = nil
         inputLevel = 0
@@ -1024,6 +1051,8 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
 
     @discardableResult
     private func fail(_ category: Failure.Category) async -> Bool {
+        autoDismissPillTask?.cancel()
+        autoDismissPillTask = nil
         let failure = Failure(category: category, message: Self.message(for: category))
         lastFailure = failure
         activeMode = nil
