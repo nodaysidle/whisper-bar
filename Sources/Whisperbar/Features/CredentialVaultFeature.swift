@@ -177,6 +177,10 @@ final class CredentialVaultFeature {
             return .notAvailable(
                 "OpenRouter keys are verified by the first explicit refinement or file transcription."
             )
+        case .typesafe:
+            return .notAvailable(
+                "TypeSafe keys are verified during speech evaluation."
+            )
         }
     }
 

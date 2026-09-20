@@ -7,6 +7,7 @@ import Security
 enum CredentialKey: String, CaseIterable, Codable, Sendable {
     case deepgramNovaStreamingTranscription = "deepgram-nova-streaming-transcription-api-key"
     case openRouter = "openrouter-api-key"
+    case typesafe = "typesafe-api-key"
 
     /// Keychain account name (TRD "Keychain account").
     var account: String { rawValue }
@@ -15,6 +16,7 @@ enum CredentialKey: String, CaseIterable, Codable, Sendable {
         switch self {
         case .deepgramNovaStreamingTranscription: return "Deepgram"
         case .openRouter: return "OpenRouter"
+        case .typesafe: return "TypeSafe"
         }
     }
 }
@@ -146,12 +148,20 @@ enum CredentialStatus: Equatable, Sendable {
 /// boundary serializes Keychain work off the main actor and every failure is
 /// mapped to a privacy-safe, provider-scoped error.
 actor CredentialVault {
+    static let typesafeKeychainAccount = CredentialKey.typesafe.account
+
     private let store: KeychainStoring
     private let service: String
+    private let environmentProvider: @Sendable (String) -> String?
 
-    init(store: KeychainStoring = SecItemKeychainStore(), service: String = AppIdentity.keychainService) {
+    init(
+        store: KeychainStoring = SecItemKeychainStore(),
+        service: String = AppIdentity.keychainService,
+        environmentProvider: @escaping @Sendable (String) -> String? = { ProcessInfo.processInfo.environment[$0] }
+    ) {
         self.store = store
         self.service = service
+        self.environmentProvider = environmentProvider
     }
 
     /// Rejects empty/whitespace-only input so a missing credential is never
@@ -195,6 +205,26 @@ actor CredentialVault {
         } catch {
             throw CredentialVaultError.deletionFailed(key)
         }
+    }
+
+    // MARK: - TypeSafe Key Helpers
+
+    func storeTypesafeKey(_ key: String) throws {
+        try store(.typesafe, value: key)
+    }
+
+    func loadTypesafeKey() -> String? {
+        if let stored = try? value(for: .typesafe), !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return stored
+        }
+        if let env = environmentProvider("TYPESAFE_API_KEY")?.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty {
+            return env
+        }
+        return nil
+    }
+
+    func deleteTypesafeKey() throws {
+        try delete(.typesafe)
     }
 
     func status(for key: CredentialKey) -> CredentialStatus {

@@ -28,6 +28,7 @@ enum AppIdentity {
     static let keychainService = "com.whisperbar.app.credentials"
     static let deepgramKeychainAccount = "deepgram-nova-streaming-transcription-api-key"
     static let openRouterKeychainAccount = "openrouter-api-key"
+    static let typesafeKeychainAccount = "typesafe-api-key"
 
     static let databaseFileName = "voice.sqlite3"
     static let applicationSupportDirectoryName = "com.whisperbar.app"
