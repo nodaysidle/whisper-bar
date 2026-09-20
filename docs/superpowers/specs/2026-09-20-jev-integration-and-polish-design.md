@@ -92,9 +92,28 @@ WhisperBar is an ultra-fast, local-first macOS menu bar dictation app. This spec
 * **ChatGPT**: Structured prompt directives.
 * **Antinote**: Clean thought notes and scratchpad entries.
 
-### 4.2 Custom Vocabulary (Stage 3 Linkage)
-* Keyterm hints passed to Deepgram / OpenRouter Whisper.
-* Deterministic post-processor mapping regex terms (e.g. `\bno days idle\b` / `\bNDI\b` $\rightarrow$ `nodaysidle` or `NDI`, `\baudit\b` $\rightarrow$ `AUDIT`).
+### 4.2 Custom Vocabulary & Replacements (Stage 3 Seeded from SuperWhisper)
+* **Discovered Source:** `/Volumes/omarchyuser/projekti/nodaysidle-voice/UserData/superwhisper-dictionary.json`
+* **Imported Assets:**
+  - **290+ Technical Vocabulary Terms:** Injected into Deepgram `keywords` / OpenRouter Whisper prompt hints (e.g. `nodaysidle`, `NODAYSIDLE`, `omarchyuser`, `projekti`, `Ghostty`, `fish shell`, `Antinote`, `PRD.md`, `ARD.md`, `TRD.md`, `TASKS.md`, `tldraw`, etc.).
+  - **130+ Deterministic Replacement Rules:** Case-insensitive word boundary substitutions post-transcription:
+    - `"no days idle"`, `"no day idle"`, `"no day cider"`, `"no day cycle"`, `"no decider"` $\rightarrow$ `nodaysidle`
+    - `"no days idle architect"` $\rightarrow$ `nodaysidle-architect`
+    - `"no days idle builder"` $\rightarrow$ `nodaysidle-builder`
+    - `"no days idle scout"` $\rightarrow$ `nodaysidle-scout`
+    - `"super whisper"` $\rightarrow$ `Superwhisper`
+    - `"type whisper"` $\rightarrow$ `TypeWhisper`
+    - `"hermes agent"` $\rightarrow$ `Hermes Agent`
+    - `"clod"`, `"clod code"`, `"cloud code"`, `"clawed code"` $\rightarrow$ `Claude` / `Claude Code`
+    - `"anti note"` $\rightarrow$ `Antinote`
+    - `"ghosty"` $\rightarrow$ `Ghostty`
+    - `"post grass"`, `"postgress"` $\rightarrow$ `PostgreSQL`
+    - `"swift ui"` $\rightarrow$ `SwiftUI`
+    - `"agents md"` $\rightarrow$ `AGENTS.md`
+    - `"tasks md"`, `"task md"` $\rightarrow$ `TASKS.md`
+    - `"pee ar dee"`, `"P R D"` $\rightarrow$ `PRD`
+    - `"pull request"`, `"P R"` $\rightarrow$ `PR`
+    - `"audit"` $\rightarrow$ `AUDIT`
 
 ---
 
