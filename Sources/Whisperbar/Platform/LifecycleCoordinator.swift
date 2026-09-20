@@ -297,4 +297,23 @@ final class LifecycleCoordinator {
     var keepsMenuBarLifecycle: Bool {
         activationPolicy.currentPolicy() == .accessory
     }
+
+    // MARK: - Window Activation Policy Transitions
+
+    /// Elevate to `.regular` application policy when a GUI window (Settings, Main)
+    /// is presented, giving the app foreground focus and a Dock presence.
+    func transitionToRegular() {
+        activationPolicy.setPolicy(.regular)
+    }
+
+    /// Revert to `.accessory` application policy when all GUI windows are closed,
+    /// returning to the clean background menu-bar lifecycle without a Dock icon.
+    func transitionToAccessory() {
+        activationPolicy.setPolicy(.accessory)
+    }
+
+    var currentActivationPolicy: ActivationPolicyValue {
+        activationPolicy.currentPolicy()
+    }
 }
+

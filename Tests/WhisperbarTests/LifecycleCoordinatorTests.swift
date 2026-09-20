@@ -201,6 +201,121 @@ struct LifecycleCoordinatorTests {
         let malformed = coordinator.recordCaptureTermination(reason: .malformedAudio, cleanup: .verifiedAbsence)
         #expect(malformed.cleanup == .cleanupVerified)
     }
+
+    // MARK: - Window Activation Policy Transitions
+
+    @Test("Window presentation elevates activation policy to regular and closing reverts to accessory")
+    func windowActivationPolicyTransitions() async {
+        let policy = RecordingActivationPolicy()
+        let coordinator = LifecycleCoordinator(
+            loginItemService: FakeLoginItemService(),
+            activationPolicy: policy
+        )
+        await coordinator.applicationDidFinishLaunching()
+        #expect(policy.appliedPolicies == [.accessory])
+        #expect(coordinator.keepsMenuBarLifecycle)
+        #expect(coordinator.currentActivationPolicy == .accessory)
+
+        // Window presentation: elevates to .regular
+        coordinator.transitionToRegular()
+        #expect(policy.appliedPolicies == [.accessory, .regular])
+        #expect(policy.currentPolicy() == .regular)
+        #expect(coordinator.currentActivationPolicy == .regular)
+        #expect(!coordinator.keepsMenuBarLifecycle)
+
+        // Window close: reverts cleanly to .accessory
+        coordinator.transitionToAccessory()
+        #expect(policy.appliedPolicies == [.accessory, .regular, .accessory])
+        #expect(policy.currentPolicy() == .accessory)
+        #expect(coordinator.currentActivationPolicy == .accessory)
+        #expect(coordinator.keepsMenuBarLifecycle)
+    }
+
+    @Test("Repeated window elevations and closes preserve clean activation policy sequence")
+    func repeatedWindowElevationCycles() async {
+        let policy = RecordingActivationPolicy()
+        let coordinator = LifecycleCoordinator(
+            loginItemService: FakeLoginItemService(),
+            activationPolicy: policy
+        )
+        await coordinator.applicationDidFinishLaunching()
+
+        // Cycle 1: Open and close
+        coordinator.transitionToRegular()
+        #expect(coordinator.currentActivationPolicy == .regular)
+        coordinator.transitionToAccessory()
+        #expect(coordinator.currentActivationPolicy == .accessory)
+
+        // Cycle 2: Reopen (e.g. applicationShouldHandleReopen) and close
+        coordinator.transitionToRegular()
+        #expect(coordinator.currentActivationPolicy == .regular)
+        coordinator.transitionToAccessory()
+        #expect(coordinator.currentActivationPolicy == .accessory)
+
+        #expect(policy.appliedPolicies == [.accessory, .regular, .accessory, .regular, .accessory])
+    }
+
+    @Test("MenuBarController openMainWindow elevates policy and closeMainWindow reverts policy")
+    func menuBarControllerWindowElevation() async {
+        let policy = RecordingActivationPolicy()
+        let coordinator = LifecycleCoordinator(
+            loginItemService: FakeLoginItemService(),
+            activationPolicy: policy
+        )
+        let controller = MenuBarController(lifecycleCoordinator: coordinator)
+        await coordinator.applicationDidFinishLaunching()
+
+        #expect(policy.appliedPolicies.contains(.accessory))
+
+        // Open window elevates to regular
+        controller.openMainWindow()
+        #expect(coordinator.currentActivationPolicy == .regular)
+        #expect(policy.appliedPolicies.contains(.regular))
+
+        // Close window reverts to accessory
+        controller.closeMainWindow()
+        #expect(coordinator.currentActivationPolicy == .accessory)
+        #expect(policy.appliedPolicies.last == .accessory)
+    }
+
+    @Test("MenuBarController status item icon updates responsively based on state")
+    func menuBarControllerStatusIconUpdates() async {
+        let controller = MenuBarController()
+        #expect(controller.menuBarSystemImageName == "waveform")
+
+        // Refining notice updates icon to sparkles
+        controller.statusText = "Refining transcript…"
+        #expect(controller.menuBarSystemImageName == "sparkles")
+
+        // Blocked updates icon to waveform.slash
+        controller.statusText = "Recording blocked"
+        #expect(controller.menuBarSystemImageName == "waveform.slash")
+
+        // Ready restores crisp waveform
+        controller.statusText = "Ready"
+        #expect(controller.menuBarSystemImageName == "waveform")
+    }
+
+    @Test("MenuBarController openMainWindow handles reopen and focuses existing window")
+    func menuBarControllerReopenFocusesWindow() async {
+        let policy = RecordingActivationPolicy()
+        let coordinator = LifecycleCoordinator(
+            loginItemService: FakeLoginItemService(),
+            activationPolicy: policy
+        )
+        let controller = MenuBarController(lifecycleCoordinator: coordinator)
+        await coordinator.applicationDidFinishLaunching()
+
+        controller.openMainWindow()
+        #expect(coordinator.currentActivationPolicy == .regular)
+
+        // Calling openMainWindow again (e.g. from applicationShouldHandleReopen)
+        controller.openMainWindow()
+        #expect(coordinator.currentActivationPolicy == .regular)
+
+        controller.closeMainWindow()
+        #expect(coordinator.currentActivationPolicy == .accessory)
+    }
 }
 
 enum LifecycleStepError: Error, Equatable {

@@ -142,7 +142,11 @@ final class MenuBarController {
 
     // MARK: Presentation state
 
-    var statusText: String = "Idle"
+    var statusText: String = "Idle" {
+        didSet {
+            updateMenuBarIcon()
+        }
+    }
     var menuBarSystemImageName: String = "waveform"
     var lastErrorMessage: String?
     private(set) var didFinishLaunching = false
@@ -294,7 +298,11 @@ final class MenuBarController {
         var recordingFileFinalizationFailed = false
     }
 
-    private var activeSession: RecordingSession?
+    private var activeSession: RecordingSession? {
+        didSet {
+            updateMenuBarIcon()
+        }
+    }
 
     /// The start attempt currently in flight: created before the first await
     /// of the start sequence and cleared when the attempt becomes the active
@@ -730,6 +738,7 @@ final class MenuBarController {
         guard !didFinishLaunching else { return }
         didFinishLaunching = true
         statusText = "Ready"
+        setupScreenChangeObserver()
         Task { @MainActor [weak self, lifecycleCoordinator] in
             await lifecycleCoordinator.applicationDidFinishLaunching()
             await self?.refreshLaunchPresentation()
@@ -789,6 +798,7 @@ final class MenuBarController {
     private func performTerminationRelease() async {
         statusText = "Terminating"
         stopFlagsMonitoring()
+        stopScreenChangeObserver()
         // Stop new session work first: no frame delivery, pump, or route send
         // outlives termination.
         let streamingDriver = streamingSessionTask
@@ -2452,17 +2462,78 @@ final class MenuBarController {
         SettingsRoot(controller: self)
     }
 
+    // MARK: - Menu Bar Status Item & Screen / Notch Lifecycle
+
+    private var screenChangeObserver: (any NSObjectProtocol)?
+
+    func setupScreenChangeObserver() {
+        stopScreenChangeObserver()
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleScreenParametersChanged()
+            }
+        }
+    }
+
+    func stopScreenChangeObserver() {
+        if let observer = screenChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            screenChangeObserver = nil
+        }
+    }
+
+    func handleScreenParametersChanged() {
+        updateMenuBarIcon()
+    }
+
+    /// Whether any connected screen features a display cutout / notch.
+    var hasNotchScreen: Bool {
+        NSScreen.screens.contains { screen in
+            screen.auxiliaryTopLeftArea != nil || screen.auxiliaryTopRightArea != nil
+        }
+    }
+
+    /// Update status item icon symbol ensuring crispness and responsive visual state.
+    func updateMenuBarIcon() {
+        if isRecordingSessionActive {
+            menuBarSystemImageName = "waveform.circle.fill"
+        } else if statusText.contains("Refining") {
+            menuBarSystemImageName = "sparkles"
+        } else if statusText.contains("blocked") || statusText.contains("failed") {
+            menuBarSystemImageName = "waveform.slash"
+        } else {
+            menuBarSystemImageName = "waveform"
+        }
+    }
+
+    // MARK: - Window Activation & Presentation Lifecycle
+
     private var mainWindowController: NSWindowController?
 
+    /// Elevate activation policy to `.regular` and ensure standard menu bar shortcuts exist.
+    func elevateToRegularPolicy() {
+        lifecycleCoordinator.transitionToRegular()
+        setupApplicationMenuIfNeeded()
+    }
+
     func openMainWindow() {
-        NSApp.setActivationPolicy(.regular)
+        elevateToRegularPolicy()
+
         if let window = mainWindowController?.window {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
             window.center()
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
-            NSApp.activate(ignoringOtherApps: true)
+            NSApplication.shared.activate(ignoringOtherApps: true)
             return
         }
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -2470,7 +2541,9 @@ final class MenuBarController {
             defer: false
         )
         window.title = "WhisperBar Settings"
+        window.tabbingMode = .disallowed
         window.center()
+        SettingsWindowDelegate.shared.controller = self
         window.delegate = SettingsWindowDelegate.shared
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: SettingsWindow(controller: self))
@@ -2478,16 +2551,86 @@ final class MenuBarController {
         mainWindowController = wc
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
-        NSApp.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func closeMainWindow() {
+        guard let window = mainWindowController?.window else { return }
+        window.close()
+    }
+
+    func handleWindowWillClose(_ notification: Notification) {
+        let closingWindow = notification.object as? NSWindow
+        let hasOtherVisibleRegularWindows = NSApplication.shared.windows.contains { window in
+            guard window != closingWindow else { return false }
+            guard window.isVisible && !window.isFloatingPanel && !(window is NSPanel) else { return false }
+            return true
+        }
+
+        if !hasOtherVisibleRegularWindows {
+            lifecycleCoordinator.transitionToAccessory()
+        }
+    }
+
+    private func setupApplicationMenuIfNeeded() {
+        let app = NSApplication.shared
+        guard app.mainMenu == nil || app.mainMenu?.items.isEmpty == true else { return }
+
+        let mainMenu = NSMenu()
+
+        // Application Menu
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About \(AppIdentity.appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Hide \(AppIdentity.appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        let quitItem = NSMenuItem(title: "Quit \(AppIdentity.appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(quitItem)
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // Edit Menu
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(redoItem)
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // Window Menu
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        app.mainMenu = mainMenu
     }
 }
 
 @MainActor
 final class SettingsWindowDelegate: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowDelegate()
+    weak var controller: MenuBarController?
 
     func windowWillClose(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        if let controller {
+            controller.handleWindowWillClose(notification)
+        } else {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
     }
 }
 
@@ -2622,8 +2765,8 @@ struct MenuBarContent: View {
             Divider()
 
             HStack {
-                SettingsLink {
-                    Text("Settings…")
+                Button("Settings…") {
+                    controller.openMainWindow()
                 }
                 .keyboardShortcut(",", modifiers: .command)
 
