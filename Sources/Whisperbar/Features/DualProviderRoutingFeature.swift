@@ -152,6 +152,28 @@ final class DualProviderRoutingFeature: TerminationReleasing {
     private let batchIntegration: OpenrouterTranscriptionIntegration
     private let jevIntegration: JevDecisionIntegration?
 
+    private(set) var isJevEnabled: Bool = true
+    private(set) var isJevSmartRefinementGateEnabled: Bool = true
+    private(set) var isJevAutoWritingModeEnabled: Bool = true
+    private(set) var isJevHallucinationGuardrailEnabled: Bool = true
+
+    func setJevEnabled(_ enabled: Bool) {
+        isJevEnabled = enabled
+        Task { await jevIntegration?.setEnabled(enabled) }
+    }
+
+    func setJevSmartRefinementGateEnabled(_ enabled: Bool) {
+        isJevSmartRefinementGateEnabled = enabled
+    }
+
+    func setJevAutoWritingModeEnabled(_ enabled: Bool) {
+        isJevAutoWritingModeEnabled = enabled
+    }
+
+    func setJevHallucinationGuardrailEnabled(_ enabled: Bool) {
+        isJevHallucinationGuardrailEnabled = enabled
+    }
+
     private var lastStreamingRequest: (language: String?, keyterms: [String])?
     private var lastBatchRequest: (url: URL, language: String?, providerOrder: [String]?)?
 
@@ -423,7 +445,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         return (nil, nil)
     }
 
-    private func processTranscriptionOutcome(
+    func processTranscriptionOutcome(
         rawTranscript: String,
         provider: TranscriptionProviderID,
         modeName: String?,
@@ -431,7 +453,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
     ) async -> Outcome {
         let appName = frontmostAppProvider()
         let jevResult: JevDecisionResult?
-        if let jevIntegration, await jevIntegration.isEnabled {
+        if isJevEnabled, let jevIntegration, await jevIntegration.isEnabled {
             jevResult = await jevIntegration.evaluateFailOpen(
                 transcript: rawTranscript,
                 frontmostApp: appName
@@ -441,8 +463,8 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         }
 
         // Branch 1: Hallucination Guardrail
-        if let jev = jevResult, jev.isHallucination {
-            let notice = "Ignored background hallucination"
+        if isJevHallucinationGuardrailEnabled, let jev = jevResult, jev.isHallucination {
+            let notice = "🛡️ Ignored phantom audio"
             lastHudNotice = notice
             onHudNotice?(notice)
             return Outcome(
@@ -456,14 +478,17 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         }
 
         // Branch 2: Fast-Path Bypass for Clean Speech
-        if let jev = jevResult, !jev.needsRefinement {
+        if isJevSmartRefinementGateEnabled, let jev = jevResult, !jev.needsRefinement {
+            let notice = "⚡ Instant Paste"
+            lastHudNotice = notice
+            onHudNotice?(notice)
             return Outcome(
                 provider: provider,
                 rawTranscript: rawTranscript,
                 refinement: .bypassedCleanSpeech,
                 isHallucination: false,
                 jevDecision: jev,
-                hudNotice: nil
+                hudNotice: notice
             )
         }
 
@@ -471,9 +496,19 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         let resolved = Self.resolveWritingMode(
             explicitModeName: modeName,
             explicitInstructions: modeInstructions,
-            jevResult: jevResult,
+            jevResult: isJevAutoWritingModeEnabled ? jevResult : nil,
             frontmostApp: appName
         )
+
+        let isRefining = await refinementIntegration.isEnabled
+        let notice: String?
+        if isRefining {
+            notice = "✨ Refining..."
+            lastHudNotice = notice
+            onHudNotice?("✨ Refining...")
+        } else {
+            notice = nil
+        }
 
         let refinementOutcome = await refineIfConfigured(
             rawTranscript: rawTranscript,
@@ -487,7 +522,21 @@ final class DualProviderRoutingFeature: TerminationReleasing {
             refinement: refinementOutcome,
             isHallucination: false,
             jevDecision: jevResult,
-            hudNotice: nil
+            hudNotice: notice
+        )
+    }
+
+    func evaluateWithJevAndRefine(
+        provider: TranscriptionProviderID,
+        rawTranscript: String,
+        modeName: String?,
+        modeInstructions: String?
+    ) async -> Outcome {
+        await processTranscriptionOutcome(
+            rawTranscript: rawTranscript,
+            provider: provider,
+            modeName: modeName,
+            modeInstructions: modeInstructions
         )
     }
 

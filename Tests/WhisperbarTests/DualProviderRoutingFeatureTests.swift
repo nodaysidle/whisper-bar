@@ -599,8 +599,8 @@ struct DualProviderRoutingFeatureTests {
         #expect(outcome != nil)
         #expect(outcome?.isHallucination == true)
         #expect(outcome?.candidateText == nil)
-        #expect(outcome?.hudNotice == "Ignored background hallucination")
-        #expect(room.router.lastHudNotice == "Ignored background hallucination")
+        #expect(outcome?.hudNotice == "🛡️ Ignored phantom audio")
+        #expect(room.router.lastHudNotice == "🛡️ Ignored phantom audio")
         #expect(room.router.completedCandidateText == nil)
         // Refinement should never be called for hallucinations
         #expect(room.refinementTransport.requests.isEmpty)

@@ -469,6 +469,13 @@ final class MenuBarController {
     /// Whether the previous clipboard is restored after auto-paste.
     private(set) var restoreClipboardAfterPaste: Bool = false
 
+    // MARK: - TypeSafe Jev Intelligence settings
+    private(set) var jevEnabled: Bool = true
+    private(set) var jevSmartRefinementGateEnabled: Bool = true
+    private(set) var jevAutoWritingModeEnabled: Bool = true
+    private(set) var jevHallucinationGuardrailEnabled: Bool = true
+    private(set) var typesafeKeyStatus: CredentialVault.TypesafeKeyStatus = .missing
+
     /// The one awaitable record/stop/cancel action the composition root runs
     /// for a session signal (shortcut or in-app control). In-app controls await
     /// it, so a control reflects the settled session state instead of racing it.
@@ -689,6 +696,7 @@ final class MenuBarController {
         }
         routing.onHudNotice = { [weak self] notice in
             self?.statusText = notice
+            self?.microphoneCaptureFeature.showStatusPill(notice)
         }
         // The input device, the buffer sink, and the non-activating floating
         // HUD panel are released before termination completes.
@@ -747,8 +755,17 @@ final class MenuBarController {
         useFnKeyForPushToTalk = await dataStore.useFnKeyForPushToTalk()
         restoreClipboardAfterPaste = await dataStore.restoreClipboardAfterPaste()
         pasteCoordinator.restoreClipboard = restoreClipboardAfterPaste
+        jevEnabled = await dataStore.isJevEnabled()
+        jevSmartRefinementGateEnabled = await dataStore.isJevSmartRefinementGateEnabled()
+        jevAutoWritingModeEnabled = await dataStore.isJevAutoWritingModeEnabled()
+        jevHallucinationGuardrailEnabled = await dataStore.isJevHallucinationGuardrailEnabled()
+        dualProviderRoutingFeature.setJevEnabled(jevEnabled)
+        dualProviderRoutingFeature.setJevSmartRefinementGateEnabled(jevSmartRefinementGateEnabled)
+        dualProviderRoutingFeature.setJevAutoWritingModeEnabled(jevAutoWritingModeEnabled)
+        dualProviderRoutingFeature.setJevHallucinationGuardrailEnabled(jevHallucinationGuardrailEnabled)
         setupFlagsMonitor()
         await refreshRefinementPresentation()
+        await refreshTypesafeKeyStatus()
     }
 
     /// CON-LIFECYCLE-APPLICATION-TERMINATION, awaited: stop the active
@@ -1342,7 +1359,17 @@ final class MenuBarController {
         syncInterimTranscript()
         lastErrorMessage = nil
         if outcome.isHallucination {
-            statusText = outcome.hudNotice ?? "Ignored background hallucination"
+            let notice = outcome.hudNotice ?? "🛡️ Ignored phantom audio"
+            statusText = notice
+            microphoneCaptureFeature.showStatusPill(notice)
+        } else if outcome.refinement == .bypassedCleanSpeech {
+            let notice = outcome.hudNotice ?? "⚡ Instant Paste"
+            statusText = notice
+            microphoneCaptureFeature.showStatusPill(notice)
+        } else if case .applied = outcome.refinement {
+            let notice = "✨ Refined"
+            statusText = notice
+            microphoneCaptureFeature.showStatusPill(notice)
         } else {
             statusText = "Ready"
         }
@@ -1899,6 +1926,36 @@ final class MenuBarController {
         await dataStore.setRestoreClipboardAfterPaste(restore)
     }
 
+    // MARK: - TypeSafe Jev Intelligence settings
+
+    func setJevEnabled(_ enabled: Bool) async {
+        jevEnabled = enabled
+        dualProviderRoutingFeature.setJevEnabled(enabled)
+        await dataStore.setJevEnabled(enabled)
+    }
+
+    func setJevSmartRefinementGateEnabled(_ enabled: Bool) async {
+        jevSmartRefinementGateEnabled = enabled
+        dualProviderRoutingFeature.setJevSmartRefinementGateEnabled(enabled)
+        await dataStore.setJevSmartRefinementGateEnabled(enabled)
+    }
+
+    func setJevAutoWritingModeEnabled(_ enabled: Bool) async {
+        jevAutoWritingModeEnabled = enabled
+        dualProviderRoutingFeature.setJevAutoWritingModeEnabled(enabled)
+        await dataStore.setJevAutoWritingModeEnabled(enabled)
+    }
+
+    func setJevHallucinationGuardrailEnabled(_ enabled: Bool) async {
+        jevHallucinationGuardrailEnabled = enabled
+        dualProviderRoutingFeature.setJevHallucinationGuardrailEnabled(enabled)
+        await dataStore.setJevHallucinationGuardrailEnabled(enabled)
+    }
+
+    func refreshTypesafeKeyStatus() async {
+        typesafeKeyStatus = await credentialVault.typesafeKeyStatus()
+    }
+
     // MARK: - Fn (Globe) Key Listener (Push-to-Talk)
 
     func setupFlagsMonitor() {
@@ -2318,6 +2375,7 @@ final class MenuBarController {
             updated[key] = await credentialVault.status(for: key)
         }
         credentialStatuses = updated
+        await refreshTypesafeKeyStatus()
     }
 
     func credentialBlockingMessage(for key: CredentialKey) -> String? {
@@ -2439,6 +2497,7 @@ final class SettingsWindowDelegate: NSObject, NSWindowDelegate {
 /// an API.
 enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     case setup
+    case intelligence
     case providers
     case hotkeys
     case modes
@@ -2450,6 +2509,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     var displayName: String {
         switch self {
         case .setup: return "Setup"
+        case .intelligence: return "Intelligence"
         case .providers: return "Providers & Keys"
         case .hotkeys: return "Shortcuts"
         case .modes: return "Modes & Vocabulary"
@@ -2461,6 +2521,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     var systemImage: String {
         switch self {
         case .setup: return "checklist"
+        case .intelligence: return "sparkles"
         case .providers: return "key"
         case .hotkeys: return "keyboard"
         case .modes: return "text.badge.plus"
@@ -2771,6 +2832,9 @@ struct SettingsRoot: View {
             SetupSettingsView(controller: controller)
                 .tabItem { Label(SettingsTab.setup.displayName, systemImage: SettingsTab.setup.systemImage) }
                 .tag(SettingsTab.setup)
+            JevIntelligenceSettingsView(controller: controller)
+                .tabItem { Label(SettingsTab.intelligence.displayName, systemImage: SettingsTab.intelligence.systemImage) }
+                .tag(SettingsTab.intelligence)
             ProvidersSettingsView(controller: controller)
                 .tabItem { Label(SettingsTab.providers.displayName, systemImage: SettingsTab.providers.systemImage) }
                 .tag(SettingsTab.providers)

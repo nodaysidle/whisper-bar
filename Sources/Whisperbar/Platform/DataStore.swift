@@ -312,6 +312,10 @@ actor DataStore {
         static let hotkeys = "whisperbar.settings.v1.hotkeys"
         static let useFnKey = "whisperbar.settings.v1.use_fn_key"
         static let restoreClipboard = "whisperbar.settings.v1.restore_clipboard"
+        static let jevEnabled = "whisperbar.settings.v1.jev_enabled"
+        static let jevSmartRefinementGate = "whisperbar.settings.v1.jev_smart_refinement_gate"
+        static let jevAutoWritingMode = "whisperbar.settings.v1.jev_auto_writing_mode"
+        static let jevHallucinationGuardrail = "whisperbar.settings.v1.jev_hallucination_guardrail"
     }
 
     private static let schemaVersion: Int32 = 1
@@ -776,12 +780,60 @@ actor DataStore {
         userDefaults.set(enabled, forKey: SettingsKey.restoreClipboard)
     }
 
+    func isJevEnabled() -> Bool {
+        if userDefaults.object(forKey: SettingsKey.jevEnabled) == nil {
+            return true
+        }
+        return userDefaults.bool(forKey: SettingsKey.jevEnabled)
+    }
+
+    func setJevEnabled(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: SettingsKey.jevEnabled)
+    }
+
+    func isJevSmartRefinementGateEnabled() -> Bool {
+        if userDefaults.object(forKey: SettingsKey.jevSmartRefinementGate) == nil {
+            return true
+        }
+        return userDefaults.bool(forKey: SettingsKey.jevSmartRefinementGate)
+    }
+
+    func setJevSmartRefinementGateEnabled(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: SettingsKey.jevSmartRefinementGate)
+    }
+
+    func isJevAutoWritingModeEnabled() -> Bool {
+        if userDefaults.object(forKey: SettingsKey.jevAutoWritingMode) == nil {
+            return true
+        }
+        return userDefaults.bool(forKey: SettingsKey.jevAutoWritingMode)
+    }
+
+    func setJevAutoWritingModeEnabled(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: SettingsKey.jevAutoWritingMode)
+    }
+
+    func isJevHallucinationGuardrailEnabled() -> Bool {
+        if userDefaults.object(forKey: SettingsKey.jevHallucinationGuardrail) == nil {
+            return true
+        }
+        return userDefaults.bool(forKey: SettingsKey.jevHallucinationGuardrail)
+    }
+
+    func setJevHallucinationGuardrailEnabled(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: SettingsKey.jevHallucinationGuardrail)
+    }
+
     /// Explicit reset behavior for versioned lightweight keys (ARD "Settings placement").
     func resetLightweightSettings() {
         userDefaults.removeObject(forKey: SettingsKey.provider)
         userDefaults.removeObject(forKey: SettingsKey.hotkeys)
         userDefaults.removeObject(forKey: SettingsKey.useFnKey)
         userDefaults.removeObject(forKey: SettingsKey.restoreClipboard)
+        userDefaults.removeObject(forKey: SettingsKey.jevEnabled)
+        userDefaults.removeObject(forKey: SettingsKey.jevSmartRefinementGate)
+        userDefaults.removeObject(forKey: SettingsKey.jevAutoWritingMode)
+        userDefaults.removeObject(forKey: SettingsKey.jevHallucinationGuardrail)
     }
 
     // MARK: Temporary audio (CON-DATA-TEMPORARY-AUDIO-RECORDING, CON-PERSISTENCE-TEMPORARY-AUDIO-RECORDING)

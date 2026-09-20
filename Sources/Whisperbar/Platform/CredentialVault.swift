@@ -209,6 +209,30 @@ actor CredentialVault {
 
     // MARK: - TypeSafe Key Helpers
 
+    enum TypesafeKeyStatus: Equatable, Sendable {
+        case saved
+        case configuredViaEnvironment
+        case missing
+
+        var displayName: String {
+            switch self {
+            case .saved: return "Saved in Keychain"
+            case .configuredViaEnvironment: return "Configured via environment ($TYPESAFE_API_KEY)"
+            case .missing: return "Missing"
+            }
+        }
+    }
+
+    func typesafeKeyStatus() -> TypesafeKeyStatus {
+        if let stored = try? value(for: .typesafe), !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .saved
+        }
+        if let env = environmentProvider("TYPESAFE_API_KEY")?.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty {
+            return .configuredViaEnvironment
+        }
+        return .missing
+    }
+
     func storeTypesafeKey(_ key: String) throws {
         try store(.typesafe, value: key)
     }

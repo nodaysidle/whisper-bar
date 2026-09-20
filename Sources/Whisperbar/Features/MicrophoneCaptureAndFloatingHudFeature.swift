@@ -380,6 +380,27 @@ struct CaptureHudSnapshot: Equatable, Sendable {
     let mode: HotkeyMode?
     let message: String?
     let interimTranscript: String?
+    let statusPill: String?
+
+    init(
+        isVisible: Bool,
+        phase: Phase,
+        level: Float,
+        elapsedDuration: TimeInterval,
+        mode: HotkeyMode?,
+        message: String?,
+        interimTranscript: String?,
+        statusPill: String? = nil
+    ) {
+        self.isVisible = isVisible
+        self.phase = phase
+        self.level = level
+        self.elapsedDuration = elapsedDuration
+        self.mode = mode
+        self.message = message
+        self.interimTranscript = interimTranscript
+        self.statusPill = statusPill
+    }
 
     static let hidden = CaptureHudSnapshot(
         isVisible: false,
@@ -388,7 +409,8 @@ struct CaptureHudSnapshot: Equatable, Sendable {
         elapsedDuration: 0,
         mode: nil,
         message: nil,
-        interimTranscript: nil
+        interimTranscript: nil,
+        statusPill: nil
     )
 }
 
@@ -472,6 +494,9 @@ final class NonActivatingHudPresenter: HudPresenting {
         panel.isReleasedWhenClosed = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
 
         let hosting = NSHostingView(
             rootView: CaptureHudContentView(
@@ -501,39 +526,85 @@ private struct CaptureHudContentView: View {
     let cancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(modeLabel)
-                    .font(.headline)
-                    .accessibilityLabel("Active mode")
-                Text(timeLabel)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Elapsed recording time")
+        Group {
+            if let pill = model.snapshot.statusPill {
+                HStack(spacing: 8) {
+                    Text(pill)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+                .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 2)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("HUD status: \(pill)")
+            } else {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 8, height: 8)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(modeLabel)
+                            .font(.system(size: 12, weight: .semibold))
+                            .accessibilityLabel("Active mode")
+                        Text(timeLabel)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Elapsed recording time")
+                    }
+
+                    LevelMeter(level: model.snapshot.level)
+
+                    if let interim = model.snapshot.interimTranscript, !interim.isEmpty {
+                        Text(interim)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 120, alignment: .leading)
+                    }
+
+                    if let message = model.snapshot.message {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                            .accessibilityLabel("Recording error")
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button(action: stop) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(5)
+                            .background(Circle().fill(.quaternary))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Stop recording")
+
+                    Button(action: cancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(5)
+                            .background(Circle().fill(.quaternary))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel recording")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+                .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 3)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("WhisperBar recording HUD")
             }
-
-            LevelMeter(level: model.snapshot.level)
-
-            if let message = model.snapshot.message {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-                    .accessibilityLabel("Recording error")
-            }
-
-            Spacer(minLength: 0)
-
-            Button("Stop", action: stop)
-                .accessibilityLabel("Stop recording")
-            Button("Cancel", action: cancel)
-                .accessibilityLabel("Cancel recording")
         }
-        .padding(12)
-        .frame(minWidth: 340)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("WhisperBar recording HUD")
+        .frame(minWidth: 320)
     }
 
     private var modeLabel: String {
@@ -557,10 +628,10 @@ private struct LevelMeter: View {
         ZStack(alignment: .leading) {
             Capsule().fill(.quaternary)
             Capsule()
-                .fill(.red)
-                .frame(width: 96 * CGFloat(Swift.min(Swift.max(level, 0), 1)))
+                .fill(.red.opacity(0.85))
+                .frame(width: 80 * CGFloat(Swift.min(Swift.max(level, 0), 1)))
         }
-        .frame(width: 96, height: 6)
+        .frame(width: 80, height: 4)
         .accessibilityLabel("Input level")
         .accessibilityValue("\(Int(Swift.min(Swift.max(level, 0), 1) * 100)) percent")
     }
@@ -616,6 +687,8 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
     private(set) var lastFailure: Failure?
     private(set) var lastNotice: String?
     private(set) var hudSnapshot: CaptureHudSnapshot = .hidden
+    /// Current status pill displayed in HUD (e.g. ⚡ Instant Paste, ✨ Refining..., 🛡️ Ignored phantom audio).
+    private(set) var currentStatusPill: String?
     /// The active route's interim streaming text shown by the HUD while
     /// recording. Presentation only: never an insertion or persistence
     /// candidate, cleared on every terminal path.
@@ -907,6 +980,30 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
         publishHud(isVisible: true, phase: .recording)
     }
 
+    // MARK: HUD status pill & badges
+
+    func showStatusPill(_ pill: String) {
+        currentStatusPill = pill
+        hudSnapshot = CaptureHudSnapshot(
+            isVisible: true,
+            phase: .finished,
+            level: 0,
+            elapsedDuration: elapsedDuration,
+            mode: activeMode,
+            message: nil,
+            interimTranscript: nil,
+            statusPill: pill
+        )
+        hudPresenter.present(hudSnapshot)
+    }
+
+    func clearStatusPill() {
+        currentStatusPill = nil
+        if !isRecording {
+            publishHud(isVisible: false, phase: .idle)
+        }
+    }
+
     // MARK: Termination
 
     /// CON-LIFECYCLE-APPLICATION-TERMINATION: stop the input device, clear the
@@ -917,6 +1014,7 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
         activeMode = nil
         inputLevel = 0
         interimTranscript = ""
+        currentStatusPill = nil
         startedAt = nil
         publishHud(isVisible: false, phase: .idle)
         await releaseCaptureResources()
@@ -931,6 +1029,7 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
         activeMode = nil
         inputLevel = 0
         interimTranscript = ""
+        currentStatusPill = nil
         isCaptureEngineRunning = false
         state = .failed(failure)
         // The HUD shows the error; recording did not start.
@@ -963,7 +1062,8 @@ final class MicrophoneCaptureAndFloatingHudFeature: TerminationReleasing {
             elapsedDuration: elapsedDuration,
             mode: activeMode,
             message: message,
-            interimTranscript: interimTranscript.isEmpty ? nil : interimTranscript
+            interimTranscript: interimTranscript.isEmpty ? nil : interimTranscript,
+            statusPill: currentStatusPill
         )
         hudPresenter.present(hudSnapshot)
     }
