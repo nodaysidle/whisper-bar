@@ -219,6 +219,9 @@ final class MenuBarController {
 
     // MARK: Owner state (PHASE-12)
 
+    /// Jev structured decision engine integration for hallucination filtering and mode routing.
+    let jevDecisionIntegration: JevDecisionIntegration
+
     /// OWN-DUAL-PROVIDER-ROUTING instance owned by the composition root. It
     /// routes each session to the shared Deepgram streaming or OpenRouter batch
     /// integration according to the explicitly selected provider and never
@@ -484,6 +487,7 @@ final class MenuBarController {
         batchTranscriptionIntegration: OpenrouterTranscriptionIntegration? = nil,
         credentialVaultFeature: CredentialVaultFeature? = nil,
         customWritingFeature: CustomWritingModesAndVocabularyFeature? = nil,
+        jevDecisionIntegration: JevDecisionIntegration? = nil,
         dualProviderRoutingFeature: DualProviderRoutingFeature? = nil,
         localHistoryFeature: LocalHistoryAndOfflineSearchFeature? = nil,
         microphoneCaptureFeature: MicrophoneCaptureAndFloatingHudFeature? = nil,
@@ -517,6 +521,10 @@ final class MenuBarController {
         self.batchTranscriptionIntegration = batchTranscriptionIntegration
             ?? OpenrouterTranscriptionIntegration(credentialVault: credentialVault)
 
+        let jev = jevDecisionIntegration
+            ?? JevDecisionIntegration(credentialVault: credentialVault)
+        self.jevDecisionIntegration = jev
+
         self.credentialVaultFeature = credentialVaultFeature
             ?? CredentialVaultFeature(vault: credentialVault, deepgramIntegration: deepgram)
 
@@ -528,7 +536,8 @@ final class MenuBarController {
             dataStore: dataStore,
             deepgramIntegration: deepgram,
             refinementIntegration: self.refinementIntegration,
-            batchIntegration: self.batchTranscriptionIntegration
+            batchIntegration: self.batchTranscriptionIntegration,
+            jevIntegration: jev
         )
         self.dualProviderRoutingFeature = routing
 
@@ -677,6 +686,9 @@ final class MenuBarController {
         }
         capture.onCancelControlRequested = { [weak self] in
             await self?.handleHudCancelControl()
+        }
+        routing.onHudNotice = { [weak self] notice in
+            self?.statusText = notice
         }
         // The input device, the buffer sink, and the non-activating floating
         // HUD panel are released before termination completes.
@@ -1329,7 +1341,11 @@ final class MenuBarController {
         stopAudioFrameDelivery()
         syncInterimTranscript()
         lastErrorMessage = nil
-        statusText = "Ready"
+        if outcome.isHallucination {
+            statusText = outcome.hudNotice ?? "Ignored background hallucination"
+        } else {
+            statusText = "Ready"
+        }
     }
 
     /// The provider-reported usage of the just-completed paid request. Every
@@ -2348,6 +2364,9 @@ final class MenuBarController {
     /// Never called from init or launch.
     @discardableResult
     func insertCompletedTranscription(_ outcome: DualProviderRoutingFeature.Outcome) async -> Bool {
+        guard outcome.candidateText != nil else {
+            return false
+        }
         // PHASE-17: accepted success deletes this recording's temporary audio
         // with verified absence before any insertion workflow begins.
         if let recordingID = temporaryAudioCleanupFeature.activeRecordingID {
@@ -2357,7 +2376,7 @@ final class MenuBarController {
         switch outcome.refinement {
         case .applied(let text):
             completed = .succeeded(finalTranscript: outcome.rawTranscript, refinedText: text)
-        case .notConfigured, .failed:
+        case .notConfigured, .failed, .bypassedCleanSpeech, .hallucinationIgnored:
             completed = .succeeded(finalTranscript: outcome.rawTranscript, refinedText: nil)
         }
         let inserted = await pasteCoordinator.requestInsertion(from: completed)

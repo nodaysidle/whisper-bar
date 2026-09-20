@@ -9,7 +9,7 @@ import Testing
 /// through injected socket, HTTP, audio-inspection, Keychain, and DataStore
 /// sandboxes. No live socket, network request, TCC prompt, microphone, or
 /// Keychain item is touched by these tests.
-@Suite("DualProviderRoutingFeature — explicit routing and recovery")
+@Suite("DualProviderRoutingFeature — explicit routing and recovery", .serialized)
 @MainActor
 struct DualProviderRoutingFeatureTests {
 
@@ -56,7 +56,12 @@ struct DualProviderRoutingFeatureTests {
         )
     }
 
-    private func makeRoom(sandbox: Sandbox, refinementEnabled: Bool = false) -> Room {
+    private func makeRoom(
+        sandbox: Sandbox,
+        refinementEnabled: Bool = false,
+        jevIntegration: JevDecisionIntegration? = nil,
+        frontmostApp: String? = nil
+    ) -> Room {
         let factory = FakeSocketFactory()
         let batchTransport = FakeHTTPTransport()
         let refinementTransport = FakeHTTPTransport()
@@ -81,11 +86,20 @@ struct DualProviderRoutingFeatureTests {
             transport: refinementTransport,
             isEnabled: refinementEnabled
         )
+        let appProvider: (@MainActor @Sendable () -> String?)?
+        if let frontmostApp {
+            appProvider = { frontmostApp }
+        } else {
+            appProvider = nil
+        }
+
         let router = DualProviderRoutingFeature(
             dataStore: sandbox.makeStore(),
             deepgramIntegration: deepgram,
             refinementIntegration: refinement,
-            batchIntegration: batch
+            batchIntegration: batch,
+            jevIntegration: jevIntegration,
+            frontmostAppProvider: appProvider
         )
         return Room(
             router: router,
@@ -456,6 +470,243 @@ struct DualProviderRoutingFeatureTests {
         #expect(room.router.state == .idle)
         #expect(room.router.interimTranscript.isEmpty)
         #expect(room.factory.session.closeRequested)
+    }
+
+    // MARK: - Jev Decision Engine Pipeline Routing Tests
+
+    final class JevMockURLProtocol: URLProtocol, @unchecked Sendable {
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var _requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+        nonisolated(unsafe) private static var _lastRequest: URLRequest?
+
+        static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return _requestHandler
+            }
+            set {
+                lock.lock()
+                defer { lock.unlock() }
+                _requestHandler = newValue
+            }
+        }
+
+        static var lastRequest: URLRequest? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return _lastRequest
+            }
+            set {
+                lock.lock()
+                defer { lock.unlock() }
+                _lastRequest = newValue
+            }
+        }
+
+        static func reset() {
+            lock.lock()
+            defer { lock.unlock() }
+            _requestHandler = nil
+            _lastRequest = nil
+        }
+
+        override class func canInit(with request: URLRequest) -> Bool {
+            true
+        }
+
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+            request
+        }
+
+        override func startLoading() {
+            JevMockURLProtocol.lock.lock()
+            JevMockURLProtocol._lastRequest = request
+            let handler = JevMockURLProtocol._requestHandler
+            JevMockURLProtocol.lock.unlock()
+
+            guard let handler else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                return
+            }
+
+            do {
+                let (response, data) = try handler(request)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
+        }
+
+        override func stopLoading() {}
+    }
+
+    private static func makeMockJevSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [JevMockURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private static func makeJevIntegration(
+        handler: @escaping (URLRequest) throws -> (HTTPURLResponse, Data)
+    ) -> JevDecisionIntegration {
+        JevMockURLProtocol.reset()
+        JevMockURLProtocol.requestHandler = handler
+        return JevDecisionIntegration(
+            session: makeMockJevSession(),
+            apiKeyProvider: { "typesafe-test-key" }
+        )
+    }
+
+    private static func jevResponseData(
+        isHallucination: Double = 0.0,
+        writingMode: String? = nil,
+        needsRefinement: Double = 0.5
+    ) -> Data {
+        var answers: [String: Any] = [
+            "is_hallucination": ["type": "noul", "noul": isHallucination],
+            "needs_refinement": ["type": "noul", "noul": needsRefinement]
+        ]
+        if let writingMode {
+            answers["writing_mode"] = ["type": "choice", "choice": writingMode]
+        }
+        let dict: [String: Any] = [
+            "model": "jev-latest",
+            "answers": answers
+        ]
+        return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data()
+    }
+
+    @Test("Hallucination detection skips paste and triggers HUD notice")
+    func hallucinationDetectionDropsPasteAndNotifiesHud() async {
+        let sandbox = DataStoreTests.makeSandbox()
+        defer { sandbox.clean() }
+
+        let jev = Self.makeJevIntegration { _ in
+            let response = HTTPURLResponse(url: JevDecisionIntegration.defaultEndpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = Self.jevResponseData(isHallucination: 0.96, writingMode: "raw", needsRefinement: 0.1)
+            return (response, data)
+        }
+
+        let room = makeRoom(sandbox: sandbox, refinementEnabled: true, jevIntegration: jev)
+
+        #expect(await beginStreaming(room))
+        let outcome = await finishStreaming(room, transcript: "Thank you for watching.")
+
+        #expect(outcome != nil)
+        #expect(outcome?.isHallucination == true)
+        #expect(outcome?.candidateText == nil)
+        #expect(outcome?.hudNotice == "Ignored background hallucination")
+        #expect(room.router.lastHudNotice == "Ignored background hallucination")
+        #expect(room.router.completedCandidateText == nil)
+        // Refinement should never be called for hallucinations
+        #expect(room.refinementTransport.requests.isEmpty)
+    }
+
+    @Test("Clean speech (needsRefinement == false) fast-paths directly to paste bypassing refinement")
+    func cleanSpeechFastPathsToPasteBypassingRefinement() async {
+        let sandbox = DataStoreTests.makeSandbox()
+        defer { sandbox.clean() }
+
+        let jev = Self.makeJevIntegration { _ in
+            let response = HTTPURLResponse(url: JevDecisionIntegration.defaultEndpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = Self.jevResponseData(isHallucination: 0.05, writingMode: "prose", needsRefinement: 0.15)
+            return (response, data)
+        }
+
+        let room = makeRoom(sandbox: sandbox, refinementEnabled: true, jevIntegration: jev)
+
+        #expect(await beginStreaming(room))
+        let outcome = await finishStreaming(room, transcript: "This is completely clean speech.")
+
+        #expect(outcome != nil)
+        #expect(outcome?.isHallucination == false)
+        #expect(outcome?.refinement == .bypassedCleanSpeech)
+        #expect(outcome?.candidateText == "This is completely clean speech.")
+        #expect(outcome?.rawTranscript == "This is completely clean speech.")
+        #expect(room.router.completedCandidateText == "This is completely clean speech.")
+        // OpenRouter refinement MUST be bypassed entirely
+        #expect(room.refinementTransport.requests.isEmpty)
+    }
+
+    @Test("Target app context propagates writing mode parameters into refinement")
+    func targetAppContextPropagatesWritingModeParameters() async {
+        let sandbox = DataStoreTests.makeSandbox()
+        defer { sandbox.clean() }
+
+        // Test with Ghostty target application context
+        let jev = Self.makeJevIntegration { _ in
+            let response = HTTPURLResponse(url: JevDecisionIntegration.defaultEndpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = Self.jevResponseData(isHallucination: 0.05, writingMode: "code", needsRefinement: 0.85)
+            return (response, data)
+        }
+
+        let room = makeRoom(
+            sandbox: sandbox,
+            refinementEnabled: true,
+            jevIntegration: jev,
+            frontmostApp: "Ghostty"
+        )
+        room.refinementTransport.configure(body: refinementSuccessBody(content: "git commit -m 'fix: issue'"))
+
+        #expect(await beginStreaming(room))
+        let outcome = await finishStreaming(room, transcript: "git commit message fix issue")
+
+        #expect(outcome != nil)
+        #expect(outcome?.refinement == .applied(text: "git commit -m 'fix: issue'"))
+        #expect(room.refinementTransport.requests.count == 1)
+
+        let bodyText = room.refinementTransport.requests.first.map { String(data: $0.body, encoding: .utf8) ?? "" } ?? ""
+        #expect(bodyText.contains("Selected mode: Code"))
+        #expect(bodyText.contains("git commit message fix issue"))
+
+        // Now verify that an explicit user mode takes precedence over Jev recommendation
+        let customRoom = makeRoom(
+            sandbox: sandbox,
+            refinementEnabled: true,
+            jevIntegration: jev,
+            frontmostApp: "Ghostty"
+        )
+        customRoom.refinementTransport.configure(body: refinementSuccessBody(content: "Customized"))
+
+        #expect(await beginStreaming(customRoom))
+        _ = await finishStreaming(
+            customRoom,
+            transcript: "hello",
+            modeName: "CustomForced",
+            modeInstructions: "Force this mode"
+        )
+
+        let customBody = customRoom.refinementTransport.requests.first.map { String(data: $0.body, encoding: .utf8) ?? "" } ?? ""
+        #expect(customBody.contains("Selected mode: CustomForced"))
+        #expect(customBody.contains("Force this mode"))
+    }
+
+    @Test("Fail-open fallback on Jev error proceeds with standard refinement")
+    func failOpenOnJevFailureProceedsWithStandardRefinement() async {
+        let sandbox = DataStoreTests.makeSandbox()
+        defer { sandbox.clean() }
+
+        // Jev returns HTTP 500 error
+        let jev = Self.makeJevIntegration { _ in
+            let response = HTTPURLResponse(url: JevDecisionIntegration.defaultEndpoint, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, Data("Internal Error".utf8))
+        }
+
+        let room = makeRoom(sandbox: sandbox, refinementEnabled: true, jevIntegration: jev)
+        room.refinementTransport.configure(body: refinementSuccessBody(content: "Refined safely."))
+
+        #expect(await beginStreaming(room))
+        let outcome = await finishStreaming(room, transcript: "hello fail open")
+
+        #expect(outcome != nil)
+        #expect(outcome?.isHallucination == false)
+        #expect(outcome?.refinement == .applied(text: "Refined safely."))
+        #expect(outcome?.candidateText == "Refined safely.")
+        #expect(room.refinementTransport.requests.count == 1)
     }
 }
 

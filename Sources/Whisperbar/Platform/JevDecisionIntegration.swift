@@ -142,6 +142,7 @@ actor JevDecisionIntegration {
 
     private let session: URLSession
     private let endpoint: URL
+    private(set) var isEnabled: Bool
     private let timeout: TimeInterval
     private let apiKeyProvider: @Sendable () async -> String?
 
@@ -149,11 +150,13 @@ actor JevDecisionIntegration {
         session: URLSession = .shared,
         endpoint: URL = JevDecisionIntegration.defaultEndpoint,
         timeout: TimeInterval = JevDecisionIntegration.defaultTimeout,
+        isEnabled: Bool = true,
         apiKeyProvider: @escaping @Sendable () async -> String?
     ) {
         self.session = session
         self.endpoint = endpoint
         self.timeout = timeout
+        self.isEnabled = isEnabled
         self.apiKeyProvider = apiKeyProvider
     }
 
@@ -161,14 +164,20 @@ actor JevDecisionIntegration {
         session: URLSession = .shared,
         endpoint: URL = JevDecisionIntegration.defaultEndpoint,
         timeout: TimeInterval = JevDecisionIntegration.defaultTimeout,
+        isEnabled: Bool = false,
         credentialVault: CredentialVault
     ) {
         self.init(
             session: session,
             endpoint: endpoint,
             timeout: timeout,
+            isEnabled: isEnabled,
             apiKeyProvider: { await credentialVault.loadTypesafeKey() }
         )
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
     }
 
     /// Evaluates speech transcript and frontmost application context against TypeSafe Jev.

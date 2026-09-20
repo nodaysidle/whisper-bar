@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Routes
 
@@ -57,18 +60,40 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         let provider: TranscriptionProviderID
         let rawTranscript: String
         let refinement: RefinementOutcome
+        let isHallucination: Bool
+        let jevDecision: JevDecisionResult?
+        let hudNotice: String?
+
+        init(
+            provider: TranscriptionProviderID,
+            rawTranscript: String,
+            refinement: RefinementOutcome,
+            isHallucination: Bool = false,
+            jevDecision: JevDecisionResult? = nil,
+            hudNotice: String? = nil
+        ) {
+            self.provider = provider
+            self.rawTranscript = rawTranscript
+            self.refinement = refinement
+            self.isHallucination = isHallucination
+            self.jevDecision = jevDecision
+            self.hudNotice = hudNotice
+        }
 
         /// Exactly one complete insertion candidate: the accepted refined text
         /// when refinement succeeded, otherwise the accepted final raw
-        /// transcript. Partial, empty, failed, or cancelled text never lands
+        /// transcript. Partial, empty, failed, cancelled, or hallucinated text never lands
         /// here because those paths never produce an outcome.
         var candidateText: String? {
+            guard !isHallucination else { return nil }
             switch refinement {
             case .applied(let text):
                 return text.isEmpty ? nil : text
-            case .notConfigured, .failed:
+            case .notConfigured, .failed, .bypassedCleanSpeech:
                 let trimmed = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : rawTranscript
+            case .hallucinationIgnored:
+                return nil
             }
         }
     }
@@ -77,6 +102,8 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         case notConfigured
         case applied(text: String)
         case failed(RefinementFailure)
+        case bypassedCleanSpeech
+        case hallucinationIgnored
     }
 
     struct Failure: Equatable, Sendable {
@@ -104,6 +131,12 @@ final class DualProviderRoutingFeature: TerminationReleasing {
     /// Retained audio is permitted only while awaiting an explicit retry or
     /// explicit provider switch after a recoverable provider failure.
     private(set) var retainsTemporaryAudioForExplicitRecovery = false
+    /// Last HUD notification generated (e.g. hallucination notice).
+    private(set) var lastHudNotice: String?
+    /// Optional closure callback for HUD notifications.
+    var onHudNotice: (@MainActor @Sendable (String) -> Void)?
+    /// Injectable provider for the frontmost application context.
+    var frontmostAppProvider: @MainActor @Sendable () -> String?
 
     /// The one complete insertion candidate of the last successful route.
     var completedCandidateText: String? { lastOutcome?.candidateText }
@@ -117,6 +150,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
     private let deepgramIntegration: DeepgramNovaStreamingTranscriptionIntegration
     private let refinementIntegration: OpenrouterRefinementIntegration
     private let batchIntegration: OpenrouterTranscriptionIntegration
+    private let jevIntegration: JevDecisionIntegration?
 
     private var lastStreamingRequest: (language: String?, keyterms: [String])?
     private var lastBatchRequest: (url: URL, language: String?, providerOrder: [String]?)?
@@ -125,12 +159,22 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         dataStore: DataStore,
         deepgramIntegration: DeepgramNovaStreamingTranscriptionIntegration,
         refinementIntegration: OpenrouterRefinementIntegration,
-        batchIntegration: OpenrouterTranscriptionIntegration
+        batchIntegration: OpenrouterTranscriptionIntegration,
+        jevIntegration: JevDecisionIntegration? = nil,
+        frontmostAppProvider: (@MainActor @Sendable () -> String?)? = nil
     ) {
         self.dataStore = dataStore
         self.deepgramIntegration = deepgramIntegration
         self.refinementIntegration = refinementIntegration
         self.batchIntegration = batchIntegration
+        self.jevIntegration = jevIntegration
+        self.frontmostAppProvider = frontmostAppProvider ?? {
+            #if canImport(AppKit)
+            return NSWorkspace.shared.frontmostApplication?.localizedName
+            #else
+            return nil
+            #endif
+        }
     }
 
     // MARK: Provider selection (CON-DATA-PROVIDER-PREFERENCE)
@@ -178,6 +222,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         lastStreamingRequest = (language, keyterms)
         interimTranscript = ""
         lastFailure = nil
+        lastHudNotice = nil
         retainsTemporaryAudioForExplicitRecovery = false
         state = .active(.deepgramStreaming)
 
@@ -241,14 +286,11 @@ final class DualProviderRoutingFeature: TerminationReleasing {
 
         switch await deepgramIntegration.state {
         case .succeeded(let finalText):
-            let outcome = Outcome(
-                provider: .deepgramStreaming,
+            let outcome = await processTranscriptionOutcome(
                 rawTranscript: finalText,
-                refinement: await refineIfConfigured(
-                    rawTranscript: finalText,
-                    modeName: modeName,
-                    modeInstructions: modeInstructions
-                )
+                provider: .deepgramStreaming,
+                modeName: modeName,
+                modeInstructions: modeInstructions
             )
             lastOutcome = outcome
             interimTranscript = ""
@@ -301,20 +343,18 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         lastBatchRequest = (url, language, providerOrder)
         interimTranscript = ""
         lastFailure = nil
+        lastHudNotice = nil
         retainsTemporaryAudioForExplicitRecovery = false
         state = .active(.openRouterBatch)
 
         let result = await batchIntegration.transcribeFile(at: url, language: language, providerOrder: providerOrder)
         switch result {
         case .transcribed(let text):
-            let outcome = Outcome(
-                provider: .openRouterBatch,
+            let outcome = await processTranscriptionOutcome(
                 rawTranscript: text,
-                refinement: await refineIfConfigured(
-                    rawTranscript: text,
-                    modeName: modeName,
-                    modeInstructions: modeInstructions
-                )
+                provider: .openRouterBatch,
+                modeName: modeName,
+                modeInstructions: modeInstructions
             )
             lastOutcome = outcome
             lastFailure = nil
@@ -324,6 +364,131 @@ final class DualProviderRoutingFeature: TerminationReleasing {
             applyBatchFailure(failure)
             return nil
         }
+    }
+
+    // MARK: - Jev Decision Engine & Mode Processing
+
+    static func modeForRecommendation(_ mode: String) -> (modeName: String?, modeInstructions: String?) {
+        switch mode.lowercased() {
+        case "code":
+            return ("Code", "Shell commands, flag syntax, snake_case or camelCase code identifiers. Keep code and commands exact.")
+        case "markdown":
+            return ("Markdown", "Format with markdown hierarchy, headers, bullet points, and task lists (- [ ]).")
+        case "prose":
+            return ("Prose", "Natural flowing sentences, clear punctuation, and coherent paragraphs.")
+        case "prompt":
+            return ("Prompt", "Structured prompt directives, clear instructions, and concise context.")
+        case "raw":
+            return ("Raw", "Exact verbatim speech without special formatting.")
+        default:
+            return (mode.capitalized, "Format according to \(mode) style.")
+        }
+    }
+
+    static func modeForApp(_ appName: String) -> (modeName: String?, modeInstructions: String?) {
+        let lower = appName.lowercased()
+        if lower.contains("ghostty") || lower.contains("fish") || lower.contains("terminal") || lower.contains("iterm") {
+            return modeForRecommendation("code")
+        } else if lower.contains("bear") {
+            return modeForRecommendation("markdown")
+        } else if lower.contains("safari") || lower.contains("chrome") || lower.contains("mail") {
+            return modeForRecommendation("prose")
+        } else if lower.contains("chatgpt") || lower.contains("claude") {
+            return modeForRecommendation("prompt")
+        } else if lower.contains("antinote") {
+            return ("Notes", "Clean thought notes, quick scratchpad entries, and concise points.")
+        }
+        return (nil, nil)
+    }
+
+    static func resolveWritingMode(
+        explicitModeName: String?,
+        explicitInstructions: String?,
+        jevResult: JevDecisionResult?,
+        frontmostApp: String?
+    ) -> (modeName: String?, modeInstructions: String?) {
+        let trimmedExplicit = explicitModeName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedExplicit, !trimmedExplicit.isEmpty {
+            return (trimmedExplicit, explicitInstructions)
+        }
+
+        if let jevMode = jevResult?.recommendedWritingMode?.trimmingCharacters(in: .whitespacesAndNewlines), !jevMode.isEmpty {
+            return modeForRecommendation(jevMode)
+        }
+
+        if let app = frontmostApp {
+            return modeForApp(app)
+        }
+
+        return (nil, nil)
+    }
+
+    private func processTranscriptionOutcome(
+        rawTranscript: String,
+        provider: TranscriptionProviderID,
+        modeName: String?,
+        modeInstructions: String?
+    ) async -> Outcome {
+        let appName = frontmostAppProvider()
+        let jevResult: JevDecisionResult?
+        if let jevIntegration, await jevIntegration.isEnabled {
+            jevResult = await jevIntegration.evaluateFailOpen(
+                transcript: rawTranscript,
+                frontmostApp: appName
+            )
+        } else {
+            jevResult = nil
+        }
+
+        // Branch 1: Hallucination Guardrail
+        if let jev = jevResult, jev.isHallucination {
+            let notice = "Ignored background hallucination"
+            lastHudNotice = notice
+            onHudNotice?(notice)
+            return Outcome(
+                provider: provider,
+                rawTranscript: rawTranscript,
+                refinement: .hallucinationIgnored,
+                isHallucination: true,
+                jevDecision: jev,
+                hudNotice: notice
+            )
+        }
+
+        // Branch 2: Fast-Path Bypass for Clean Speech
+        if let jev = jevResult, !jev.needsRefinement {
+            return Outcome(
+                provider: provider,
+                rawTranscript: rawTranscript,
+                refinement: .bypassedCleanSpeech,
+                isHallucination: false,
+                jevDecision: jev,
+                hudNotice: nil
+            )
+        }
+
+        // Branch 3: Refinement (with mode injection if not explicitly forced)
+        let resolved = Self.resolveWritingMode(
+            explicitModeName: modeName,
+            explicitInstructions: modeInstructions,
+            jevResult: jevResult,
+            frontmostApp: appName
+        )
+
+        let refinementOutcome = await refineIfConfigured(
+            rawTranscript: rawTranscript,
+            modeName: resolved.modeName,
+            modeInstructions: resolved.modeInstructions
+        )
+
+        return Outcome(
+            provider: provider,
+            rawTranscript: rawTranscript,
+            refinement: refinementOutcome,
+            isHallucination: false,
+            jevDecision: jevResult,
+            hudNotice: nil
+        )
     }
 
     // MARK: Cancellation and explicit retry
@@ -340,6 +505,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
             return
         }
         interimTranscript = ""
+        lastHudNotice = nil
         retainsTemporaryAudioForExplicitRecovery = false
         state = .cancelled
     }
@@ -378,6 +544,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
             await batchIntegration.cancelTranscription()
         }
         interimTranscript = ""
+        lastHudNotice = nil
         retainsTemporaryAudioForExplicitRecovery = false
         state = .idle
     }
