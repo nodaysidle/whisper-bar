@@ -71,6 +71,10 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        AppWire.controller?.buildDockMenu()
+    }
+
     /// CON-LIFECYCLE-APPLICATION-TERMINATION, awaited: AppKit is told to wait
     /// (`.terminateLater`), the controller stops the active session and
     /// releases every registered resource through the lifecycle owner, and
@@ -484,6 +488,9 @@ final class MenuBarController {
     private(set) var jevHallucinationGuardrailEnabled: Bool = true
     private(set) var typesafeKeyStatus: CredentialVault.TypesafeKeyStatus = .missing
 
+    /// Whether the app keeps its Dock icon visible and remains in .regular mode.
+    var keepDockIconVisible: Bool = true
+
     /// The one awaitable record/stop/cancel action the composition root runs
     /// for a session signal (shortcut or in-app control). In-app controls await
     /// it, so a control reflects the settled session state instead of racing it.
@@ -510,10 +517,12 @@ final class MenuBarController {
         providerSelectionAndCostProtectionFeature: ProviderSelectionAndCostProtectionFeature? = nil,
         temporaryAudioCleanupFeature: TemporaryAudioCleanupFeature? = nil,
         saveDestinationChooser: (@MainActor (String) async -> TemporaryAudioCleanupFeature.SaveDestinationDecision)? = nil,
-        sessionTickInterval: Duration = .milliseconds(250)
+        sessionTickInterval: Duration = .milliseconds(250),
+        keepDockIconVisible: Bool = true
     ) {
         self.sessionTickInterval = sessionTickInterval
         self.credentialVault = credentialVault
+        self.keepDockIconVisible = keepDockIconVisible
         self.dataStore = dataStore
         self.lifecycleCoordinator = lifecycleCoordinator
         self.permissionCoordinator = permissionCoordinator
@@ -739,8 +748,14 @@ final class MenuBarController {
         didFinishLaunching = true
         statusText = "Ready"
         setupScreenChangeObserver()
+        if keepDockIconVisible {
+            elevateToRegularPolicy()
+        }
         Task { @MainActor [weak self, lifecycleCoordinator] in
             await lifecycleCoordinator.applicationDidFinishLaunching()
+            if self?.keepDockIconVisible == true {
+                self?.elevateToRegularPolicy()
+            }
             await self?.refreshLaunchPresentation()
         }
     }
@@ -2567,8 +2582,34 @@ final class MenuBarController {
             return true
         }
 
-        if !hasOtherVisibleRegularWindows {
+        if !hasOtherVisibleRegularWindows && !keepDockIconVisible {
             lifecycleCoordinator.transitionToAccessory()
+        }
+    }
+
+    func buildDockMenu() -> NSMenu {
+        let menu = NSMenu()
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(dockMenuOpenSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(NSMenuItem.separator())
+        let toggleItem = NSMenuItem(title: "Toggle Dictation", action: #selector(dockMenuToggleDictation), keyEquivalent: "d")
+        toggleItem.target = self
+        menu.addItem(toggleItem)
+        return menu
+    }
+
+    @objc func dockMenuOpenSettings() {
+        openMainWindow()
+    }
+
+    @objc func dockMenuToggleDictation() {
+        Task { @MainActor in
+            if self.isRecordingSessionActive {
+                _ = await self.stopInAppRecording()
+            } else {
+                _ = await self.startInAppRecording()
+            }
         }
     }
 

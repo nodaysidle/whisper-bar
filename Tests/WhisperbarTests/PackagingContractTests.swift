@@ -183,7 +183,7 @@ struct PackagingContractTests {
         #expect(Self.string(plist, "CFBundleShortVersionString") == "1.0.0")
         #expect(Self.string(plist, "CFBundleVersion") == "1")
         #expect(Self.bool(plist, "NSHighResolutionCapable") == true)
-        #expect(Self.bool(plist, "LSUIElement") == true, "menu-bar lifecycle requires LSUIElement")
+        #expect(Self.bool(plist, "LSUIElement") == false, "dock pinning requires LSUIElement to be false")
         #expect(
             Self.string(plist, "NSMicrophoneUsageDescription")
                 == "WhisperBar uses the microphone only while you explicitly record dictation."

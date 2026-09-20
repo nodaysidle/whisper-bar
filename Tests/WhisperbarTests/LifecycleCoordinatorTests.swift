@@ -262,7 +262,7 @@ struct LifecycleCoordinatorTests {
             loginItemService: FakeLoginItemService(),
             activationPolicy: policy
         )
-        let controller = MenuBarController(lifecycleCoordinator: coordinator)
+        let controller = MenuBarController(lifecycleCoordinator: coordinator, keepDockIconVisible: false)
         await coordinator.applicationDidFinishLaunching()
 
         #expect(policy.appliedPolicies.contains(.accessory))
@@ -303,7 +303,7 @@ struct LifecycleCoordinatorTests {
             loginItemService: FakeLoginItemService(),
             activationPolicy: policy
         )
-        let controller = MenuBarController(lifecycleCoordinator: coordinator)
+        let controller = MenuBarController(lifecycleCoordinator: coordinator, keepDockIconVisible: false)
         await coordinator.applicationDidFinishLaunching()
 
         controller.openMainWindow()

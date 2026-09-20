@@ -169,7 +169,7 @@ check_plist CFBundleShortVersionString "$SHORT_VERSION"
 check_plist CFBundleVersion "$BUILD_VERSION"
 check_plist LSMinimumSystemVersion "$binary_minimum_os"
 check_plist NSHighResolutionCapable "true"
-check_plist LSUIElement "true"
+check_plist LSUIElement "false"
 check_plist NSMicrophoneUsageDescription "$MIC_USAGE_DESCRIPTION"
 log "[4/7] locked bundle identity verified"
 

@@ -56,7 +56,8 @@ Unlike bloated electron wrappers or cloud-dependent tools, WhisperBar is **100% 
   - Embedded SQLite database storing past transcripts with Full-Text Search (FTS5) — totally offline, private, and searchable in milliseconds.
 - 💎 **Calm, Low-Noise Apple HIG Design:**
   - Redesigned minimalist floating capsule HUD with `.regularMaterial` frosted glass and auto-dismissing status pills (⚡ *Instant Paste*, ✨ *Refining...*, 🛡️ *Ignored phantom audio*).
-  - Robust AppKit activation policy transitions (.regular with full macOS menus in Settings, reverting cleanly to .accessory when closed).
+  - **Native Dock & Menu Bar Modes:** Pin WhisperBar directly to your macOS Dock for instant access to Settings and quick actions even if the menu bar is obscured by a camera notch or menu bar clutter.
+  - Native Dock menu with quick access to Settings and Dictation toggle.
   - Custom dark obsidian icon with glowing acoustic ribbon.
 
 ---

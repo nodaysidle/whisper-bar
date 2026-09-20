@@ -853,7 +853,7 @@ struct MicrophoneCaptureAndFloatingHudFeatureTests {
 /// temporary audio.
 /// No real microphone, TCC prompt, socket, network request, Keychain item,
 /// clipboard, or panel is touched.
-@Suite("MenuBarController composition — HUD session routing, interim text, and permission ordering")
+@Suite("MenuBarController composition — HUD session routing, interim text, and permission ordering", .serialized)
 @MainActor
 struct MenuBarControllerHudCompositionTests {
 
