@@ -1,44 +1,51 @@
-# WhisperBar v1.0.0 Release Notes
+# WhisperBar v1.1.0 Release Notes
 
-WhisperBar is a privacy-first, lightning-fast native macOS menu bar dictation utility built with Swift 6 and SwiftUI. It bridges speech directly into your active application with zero friction, offering real-time streaming transcription, smart post-processing, and full clipboard safety.
+WhisperBar v1.1.0 introduces major performance, intelligence, and UI enhancements: **TypeSafe Jev System One decision integration** for sub-150ms smart refinement gating, **SuperWhisper custom vocabulary & replacement engine**, and a complete **Menu Bar & low-noise GUI polish**.
 
 ---
 
-## What's New in v1.0.0
+## What's New in v1.1.0
 
-### 🎙️ Dual-Provider Speech Architecture
-- **Deepgram Nova-3 Streaming**: Sub-second interim transcripts streamed directly through WebSockets as you speak.
-- **OpenRouter Audio Batch Fallback**: Complete batch transcription with OpenAI Whisper Large v3 for resilient processing.
-- **AI Text Refinement**: Optional post-transcription LLM formatting and grammar cleanup via OpenRouter without overwriting raw transcripts.
+### 🧠 TypeSafe Jev System One Intelligence
+- **Sub-150ms Structured Decision Engine:** Evaluates raw transcripts post-transcription using TypeSafe's `POST /v1/systemone` (`jev-latest`) model.
+- **⚡ Smart Refinement Gate (Huge Latency & Token Saver):** Fast-paths clean, coherent speech ($p < 0.30$) directly to paste in under 150ms, bypassing the slower OpenRouter LLM step. Refinement is invoked only when speech contains filler words, stuttering, or structural disfluencies.
+- **🎯 Context-Aware Writing Mode Routing:** Detects the active frontmost application (`Ghostty` / fish shell / Herdr $\rightarrow$ `code`, `Bear` $\rightarrow$ `markdown`, `Safari` $\rightarrow$ `prose`, `ChatGPT` $\rightarrow$ `prompt`, `Antinote` $\rightarrow$ `notes`) to automatically format output without manual mode toggling.
+- **🛡️ Hallucination Guardrail:** Intercepts and silently drops phantom Whisper subtitle artifacts (e.g. *"Thank you for watching"*, repeating silence loops with $p > 0.85$), alerting the HUD without polluting your target document.
+- **Fail-Open Resilience:** Network dropouts or API timeouts gracefully fall back to standard WhisperBar behavior without stalling your dictation.
 
-### ⌨️ Global Hotkeys & Push-to-Talk Modes
-- **Fn / Globe Key Push-to-Talk**: Hold Fn to dictate; release to automatically paste into your frontmost application.
-- **Karabiner Hyperkey Preset**: Out-of-the-box support for `Hyper+Space` (`Cmd+Ctrl+Opt+Shift+Space`).
-- **Flexible Trigger Modes**: Both Push-to-Talk and Toggle Recording supported with customizable shortcuts.
+### 📚 SuperWhisper Custom Vocabulary & Replacement Engine
+- **Seeded from Production Dictionary:** Directly imports **288 technical vocabulary terms** and **264 exact replacement rules** from SuperWhisper (`superwhisper-dictionary.json`).
+- **Deterministic Word-Boundary Normalization:** Pre-compiled regex engine normalizes text before insertion:
+  - `"no days idle"`, `"no day idle"`, `"no day cider"`, `"no decider"` $\rightarrow$ `nodaysidle`
+  - `"no days idle architect"` $\rightarrow$ `nodaysidle-architect`
+  - `"no days idle builder"` $\rightarrow$ `nodaysidle-builder`
+  - `"no days idle scout"` $\rightarrow$ `nodaysidle-scout`
+  - `"P R"`, `"pee ar dee"` $\rightarrow$ `PR`, `PRD`
+  - `"ghosty"` $\rightarrow$ `Ghostty`
+  - `"anti note"` $\rightarrow$ `Antinote`
+  - `"post grass"`, `"postgress"` $\rightarrow$ `PostgreSQL`
+  - `"swift ui"` $\rightarrow$ `SwiftUI`
+  - `"audit"` $\rightarrow$ `AUDIT`
+- **Provider Keyterm Hints:** Seamlessly feeds vocabulary terms into Deepgram streaming query parameters and OpenRouter refinement prompts.
 
-### 📋 Safe Auto-Paste & Clipboard Preservation
-- Automatically restores prior clipboard contents after pasting dictations.
-- Fallback notification and one-click copy if Accessibility / CGEvent permissions are not granted.
-
-### 🔍 Local-First History & Search
-- Bounded SQLite storage in Application Support sandbox.
-- Offline full-text search across all recorded transcripts.
-- Strict data privacy: no third-party telemetry, no cloud storage of audio.
-
-### ⚙️ Native Settings & Dock Elevation
-- Independent Settings window elevated to a foreground app with Dock representation and app switcher focus.
-- Secure credential management backed by macOS Keychain.
-- Customizable writing modes, prompt vocabulary, and input audio devices.
+### 💎 Menu Bar Polish & Calm, Intuitive UI
+- **Low-Noise Settings View:** Redesigned with grouped Apple HIG native hierarchy; eliminates visual noise, harsh borders, and redundant text. Includes a dedicated **TypeSafe Jev Intelligence** control panel.
+- **Minimalist Floating HUD Capsule:** Modernized into a quiet `.regularMaterial` capsule with 1.8-second auto-dismissing status pills:
+  - ⚡ *Instant Paste* (bypassed LLM on clean speech)
+  - ✨ *Refining...* $\rightarrow$ ✨ *Refined* (in-flight & completed LLM formatting)
+  - 🛡️ *Ignored phantom audio* (hallucination intercepted)
+- **Robust Activation Policy Transitions:** Elevates to `.regular` (dock icon, foreground focus, standard macOS Cmd+C/V/Z menus) when Settings is open, and cleanly reverts to `.accessory` (pure background menu-bar daemon) when closed.
+- **Display & Notch Resilience:** Dynamic notch margin awareness and display reconfiguration observers.
 
 ---
 
 ## Verification & Quality Gates
 
-- **Swift Test Suite**: 268 tests in 19 suites passed (`0 failures`).
-- **Swift 6 Strict Concurrency**: Strict concurrency checked and verified.
-- **Release Build**: Compiled with release optimizations for Apple Silicon (`arm64`, macOS 14.0+).
-- **Code Signing**: Validated with `codesign --verify --deep --strict`.
-- **DMG Integrity**: Generated via `hdiutil` and verified for distribution.
+- **Swift Test Suite:** 299 tests in 22 suites passed (`0 failures`, 1.54s).
+- **Swift 6 Strict Concurrency:** Verified across all actors, `@Observable` view models, and `Sendable` payloads.
+- **Release Build:** Optimized native ARM64 release binary compiled for macOS 14.0+.
+- **Code Signing:** Verified via `codesign --verify --deep --strict`.
+- **Installed & Tested:** Running locally at `/Applications/WhisperBar.app`.
 
 ---
 
@@ -46,4 +53,5 @@ WhisperBar is a privacy-first, lightning-fast native macOS menu bar dictation ut
 
 | File | SHA-256 Checksum |
 |---|---|
-| `WhisperBar.dmg` | `45431bb6d934f08cedbb7aa43c373cbba6045d55b36643b35706e7225a10d0af` |
+| `WhisperBar.dmg` | `5e330b2a503190f18d456498ad5a81d9f4a81f2ddfb05b9903acdf12f2c4179f` |
+| `WhisperBar.app` | Embedded Bundle Identifier `com.whisperbar.app` |

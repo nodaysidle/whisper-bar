@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Swift-6.0%20Strict%20Concurrency-F05138?style=for-the-badge&logo=swift&logoColor=white" alt="Swift 6.0" />
   <img src="https://img.shields.io/badge/Dependencies-Zero%20(100%25%20Native)-22c55e?style=for-the-badge" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/Security-macOS%20Keychain%20Only-blue?style=for-the-badge" alt="Keychain Security" />
-  <img src="https://img.shields.io/badge/Tests-268%20Passed-success?style=for-the-badge" alt="Tests Passed" />
+  <img src="https://img.shields.io/badge/Tests-299%20Passed-success?style=for-the-badge" alt="Tests Passed" />
 </p>
 
 ---
@@ -28,6 +28,15 @@ Unlike bloated electron wrappers or cloud-dependent tools, WhisperBar is **100% 
 
 ## Highlights & Features
 
+- 🧠 **TypeSafe Jev System One Decision Engine:**
+  - **Sub-150ms Structured Inference:** Powered by TypeSafe's `POST /v1/systemone` (`jev-latest`) model.
+  - **⚡ Smart Refinement Gate (Huge Latency & Token Saver):** Bypasses slow OpenRouter LLM refinement on clean speech ($p < 0.30$), delivering instant auto-paste in <150ms. Refinement runs only when speech has hesitation or grammar disfluencies.
+  - **🎯 Context-Aware Writing Mode Routing:** Inspects the active application (**Ghostty** / fish shell / Herdr $\rightarrow$ `code`, **Bear** $\rightarrow$ `markdown`, **Safari** $\rightarrow$ `prose`, **ChatGPT** $\rightarrow$ `prompt`, **Antinote** $\rightarrow$ `notes`) to automatically format output without manual mode switching.
+  - **🛡️ Hallucination Guardrail:** Intercepts and drops phantom Whisper subtitle artifacts (*"Thank you for watching"*, repeating loops) before insertion.
+- 📚 **SuperWhisper Custom Vocabulary & Deterministic Replacement Engine:**
+  - Seeded directly with **288 technical vocabulary terms** and **264 exact replacement rules** from SuperWhisper (`superwhisper-dictionary.json`).
+  - Pre-compiled word-boundary regex engine guarantees exact casing (`nodaysidle`, `nodaysidle-architect`, `PR`, `PRD`, `Ghostty`, `Antinote`, `PostgreSQL`, `SwiftUI`, `AUDIT`).
+  - Injects vocabulary terms directly into Deepgram streaming query parameters and OpenRouter refinement prompts.
 - 🎙️ **Dual-Engine Speech Architecture:**
   - **Live WebSocket Streaming:** Powered by **Deepgram Nova-3** (16 kHz linear PCM) for instant, low-latency live transcription with real-time HUD preview.
   - **Batch & Fallback Routing:** Powered by **OpenRouter** batch transcription for robust, cost-effective offline-to-online transcription.
@@ -45,8 +54,10 @@ Unlike bloated electron wrappers or cloud-dependent tools, WhisperBar is **100% 
   - **Deterministic Audio Purge:** Temporary audio recordings are wiped with verified disk absence the second transcription succeeds or is cancelled.
 - 🗄️ **Local SQLite Search & History:**
   - Embedded SQLite database storing past transcripts with Full-Text Search (FTS5) — totally offline, private, and searchable in milliseconds.
-- 🎨 **Bespoke Apple HIG Design:**
-  - Frosted glass menu extra, responsive settings tabs, custom-designed dark obsidian app icon with glowing acoustic ribbon.
+- 💎 **Calm, Low-Noise Apple HIG Design:**
+  - Redesigned minimalist floating capsule HUD with `.regularMaterial` frosted glass and auto-dismissing status pills (⚡ *Instant Paste*, ✨ *Refining...*, 🛡️ *Ignored phantom audio*).
+  - Robust AppKit activation policy transitions (.regular with full macOS menus in Settings, reverting cleanly to .accessory when closed).
+  - Custom dark obsidian icon with glowing acoustic ribbon.
 
 ---
 
