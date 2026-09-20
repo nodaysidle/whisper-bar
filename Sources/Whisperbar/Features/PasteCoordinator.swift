@@ -399,6 +399,7 @@ final class PasteCoordinator: TerminationReleasing {
     private let requestAccessibilityTrust: @MainActor () async -> PermissionState
     private let clipboardAvailability: @MainActor () -> PermissionState
     private let waitForPasteConsumption: @Sendable (Int) async -> Void
+    private let replacementEngine: VocabularyReplacementEngine
 
     init(
         targetCapture: FocusedTargetCapturing = SystemFocusedTargetCapture(),
@@ -412,7 +413,8 @@ final class PasteCoordinator: TerminationReleasing {
         waitForPasteConsumption: @escaping @Sendable (Int) async -> Void = { milliseconds in
             try? await Task.sleep(for: .milliseconds(Int64(milliseconds)))
         },
-        restoreClipboard: Bool = true
+        restoreClipboard: Bool = true,
+        replacementEngine: VocabularyReplacementEngine = .default
     ) {
         self.targetCapture = targetCapture
         self.accessibilityInserter = accessibilityInserter
@@ -424,6 +426,7 @@ final class PasteCoordinator: TerminationReleasing {
         self.clipboardAvailability = clipboardAvailability
         self.waitForPasteConsumption = waitForPasteConsumption
         self.restoreClipboard = restoreClipboard
+        self.replacementEngine = replacementEngine
     }
 
     // MARK: Step 1 — capture at recording start
@@ -452,17 +455,19 @@ final class PasteCoordinator: TerminationReleasing {
     /// candidate).
     static func insertionCandidate(
         finalTranscript: String,
-        refinedText: String?
+        refinedText: String?,
+        replacementEngine: VocabularyReplacementEngine = .default
     ) -> InsertionCandidate? {
-        let text: String
+        let rawText: String
         let source: InsertionCandidate.Source
         if let refinedText {
-            text = refinedText
+            rawText = refinedText
             source = .refinedText
         } else {
-            text = finalTranscript
+            rawText = finalTranscript
             source = .finalTranscript
         }
+        let text = replacementEngine.replace(in: rawText)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return InsertionCandidate(text: text, source: source)
     }
@@ -491,7 +496,8 @@ final class PasteCoordinator: TerminationReleasing {
         case .succeeded(let finalTranscript, let refinedText):
             guard let candidate = Self.insertionCandidate(
                 finalTranscript: finalTranscript,
-                refinedText: refinedText
+                refinedText: refinedText,
+                replacementEngine: replacementEngine
             ) else {
                 return fail(
                     .emptyOrIncompleteText,

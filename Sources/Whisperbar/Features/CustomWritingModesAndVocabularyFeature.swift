@@ -93,10 +93,16 @@ final class CustomWritingModesAndVocabularyFeature {
 
     private let dataStore: DataStore
     private let now: @Sendable () -> Date
+    private let seededVocabulary: [String]
 
-    init(dataStore: DataStore, now: @escaping @Sendable () -> Date = { Date() }) {
+    init(
+        dataStore: DataStore,
+        now: @escaping @Sendable () -> Date = { Date() },
+        seededVocabulary: [String] = VocabularyReplacementEngine.seededVocabulary
+    ) {
         self.dataStore = dataStore
         self.now = now
+        self.seededVocabulary = seededVocabulary
     }
 
     // MARK: Effective mode resolution
@@ -116,11 +122,15 @@ final class CustomWritingModesAndVocabularyFeature {
     /// Identical stored state always produces identical values.
     var parameters: WritingModeParameters {
         let mode = effectiveMode
+        let userTerms = Self.normalizedKeyterms(from: vocabularyTerms)
+        let combined = seededVocabulary.isEmpty
+            ? userTerms
+            : Self.normalizedKeyterms(fromWords: userTerms + seededVocabulary)
         return WritingModeParameters(
             modeID: mode?.id,
             modeName: mode?.name,
             modeInstructions: mode?.instructions,
-            keyterms: Self.normalizedKeyterms(from: vocabularyTerms)
+            keyterms: combined
         )
     }
 

@@ -20,8 +20,12 @@ struct CustomWritingModesAndVocabularyFeatureTests {
 
     // MARK: - Helpers
 
-    private func makeFeature(sandbox: Sandbox, now: Date = Date(timeIntervalSince1970: 1_767_225_600)) -> CustomWritingModesAndVocabularyFeature {
-        CustomWritingModesAndVocabularyFeature(dataStore: sandbox.makeStore(), now: { now })
+    private func makeFeature(
+        sandbox: Sandbox,
+        now: Date = Date(timeIntervalSince1970: 1_767_225_600),
+        seededVocabulary: [String] = []
+    ) -> CustomWritingModesAndVocabularyFeature {
+        CustomWritingModesAndVocabularyFeature(dataStore: sandbox.makeStore(), now: { now }, seededVocabulary: seededVocabulary)
     }
 
     private func makeMode(
