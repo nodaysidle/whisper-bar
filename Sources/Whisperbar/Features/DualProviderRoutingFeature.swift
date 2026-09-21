@@ -25,6 +25,13 @@ enum TranscriptionRoute: Equatable, Sendable {
     }
 }
 
+/// Why a HUD notice is shown. The routing branch chooses this; the menu icon
+/// does not infer it from the notice string.
+enum HudNoticePhase: Equatable, Sendable {
+    case refining
+    case status
+}
+
 // MARK: - DualProviderRoutingFeature
 
 /// OWN-DUAL-PROVIDER-ROUTING.
@@ -133,8 +140,9 @@ final class DualProviderRoutingFeature: TerminationReleasing {
     private(set) var retainsTemporaryAudioForExplicitRecovery = false
     /// Last HUD notification generated (e.g. hallucination notice).
     private(set) var lastHudNotice: String?
-    /// Optional closure callback for HUD notifications.
-    var onHudNotice: (@MainActor @Sendable (String) -> Void)?
+    /// Optional closure callback for HUD notifications. The phase is chosen by
+    /// the routing branch, so presentation never infers it from the notice text.
+    var onHudNotice: (@MainActor @Sendable (String, HudNoticePhase) -> Void)?
     /// Injectable provider for the frontmost application context.
     var frontmostAppProvider: @MainActor @Sendable () -> String?
 
@@ -466,7 +474,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         if isJevHallucinationGuardrailEnabled, let jev = jevResult, jev.isHallucination {
             let notice = "🛡️ Ignored phantom audio"
             lastHudNotice = notice
-            onHudNotice?(notice)
+            onHudNotice?(notice, .status)
             return Outcome(
                 provider: provider,
                 rawTranscript: rawTranscript,
@@ -481,7 +489,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         if isJevSmartRefinementGateEnabled, let jev = jevResult, !jev.needsRefinement {
             let notice = "⚡ Instant Paste"
             lastHudNotice = notice
-            onHudNotice?(notice)
+            onHudNotice?(notice, .status)
             return Outcome(
                 provider: provider,
                 rawTranscript: rawTranscript,
@@ -505,7 +513,7 @@ final class DualProviderRoutingFeature: TerminationReleasing {
         if isRefining {
             notice = "✨ Refining..."
             lastHudNotice = notice
-            onHudNotice?("✨ Refining...")
+            onHudNotice?("✨ Refining...", .refining)
         } else {
             notice = nil
         }

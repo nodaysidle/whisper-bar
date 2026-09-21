@@ -257,8 +257,7 @@ actor JevDecisionIntegration {
         }
 
         guard httpResponse.statusCode == 200 else {
-            let message = String(data: data, encoding: .utf8)
-            throw JevDecisionError.httpError(statusCode: httpResponse.statusCode, message: message)
+            throw JevDecisionError.httpError(statusCode: httpResponse.statusCode, message: nil)
         }
 
         let systemOneResponse: SystemOneResponse
@@ -295,7 +294,7 @@ actor JevDecisionIntegration {
         do {
             return try await evaluate(transcript: transcript, frontmostApp: frontmostApp)
         } catch {
-            logger.warning("Jev evaluation failed, failing open: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Jev evaluation failed, failing open: status or transport error")
             return .failOpen
         }
     }

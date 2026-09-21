@@ -476,14 +476,30 @@ final class NonActivatingHudPresenter: HudPresenting {
         let panel = panel ?? makePanel()
         self.panel = panel
         model.snapshot = snapshot
+        positionPanel(panel)
         // orderFrontRegardless presents the panel without activating the app
         // and without moving key focus away from the focused application.
         panel.orderFrontRegardless()
     }
 
+    private func positionPanel(_ panel: NonActivatingHudPanel) {
+        let screen = NSScreen.screens.first {
+            $0.frame.contains(NSEvent.mouseLocation)
+        } ?? NSScreen.main
+        guard let screen else { return }
+        let visible = screen.visibleFrame
+        let fittingSize = panel.contentView?.fittingSize ?? panel.frame.size
+        let targetSize = NSSize(width: max(fittingSize.width, 32), height: max(fittingSize.height, 32))
+        panel.setContentSize(targetSize)
+        panel.setFrameOrigin(NSPoint(
+            x: visible.midX - targetSize.width / 2,
+            y: visible.minY + 36
+        ))
+    }
+
     private func makePanel() -> NonActivatingHudPanel {
         let panel = NonActivatingHudPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 76),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 44),
             styleMask: HudPanelContract.styleMask,
             backing: .buffered,
             defer: true
@@ -505,9 +521,9 @@ final class NonActivatingHudPresenter: HudPresenting {
                 cancel: { [weak self] in self?.cancelAction?() }
             )
         )
-        hosting.frame = panel.contentLayoutRect
+        hosting.sizingOptions = [.intrinsicContentSize]
         panel.contentView = hosting
-        panel.center()
+        positionPanel(panel)
         return panel
     }
 }
@@ -532,6 +548,15 @@ private struct CaptureHudContentView: View {
                     Text(pill)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.primary)
+
+                    Button(action: cancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(4)
+                            .background(Circle().fill(.quaternary))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss status")
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
@@ -604,7 +629,6 @@ private struct CaptureHudContentView: View {
                 .accessibilityLabel("WhisperBar recording HUD")
             }
         }
-        .frame(minWidth: 320)
     }
 
     private var modeLabel: String {

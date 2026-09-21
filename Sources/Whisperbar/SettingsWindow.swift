@@ -105,7 +105,7 @@ struct JevIntelligenceSettingsView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         // Sub-toggle 1: Smart Refinement Gate
                         VStack(alignment: .leading, spacing: 4) {
-                            Toggle("Smart Refinement Gate (skip LLM on clean speech)", isOn: Binding(
+                            Toggle("Smart Refinement Gate", isOn: Binding(
                                 get: { controller.jevSmartRefinementGateEnabled },
                                 set: { enabled in
                                     Task { await controller.setJevSmartRefinementGateEnabled(enabled) }
@@ -114,7 +114,7 @@ struct JevIntelligenceSettingsView: View {
                             .font(.body.weight(.medium))
                             .disabled(!controller.jevEnabled)
 
-                            Text("⚡ Bypasses LLM refinement and pastes immediately (Instant Paste) when speech is clean and fluent, saving time and tokens.")
+                            Text("Bypasses refinement and pastes immediately when speech is fluent and clear, reducing latency and API usage.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 20)
@@ -124,7 +124,7 @@ struct JevIntelligenceSettingsView: View {
 
                         // Sub-toggle 2: Auto Writing Mode
                         VStack(alignment: .leading, spacing: 4) {
-                            Toggle("Auto Writing Mode (context-aware)", isOn: Binding(
+                            Toggle("Context-Aware Writing Mode", isOn: Binding(
                                 get: { controller.jevAutoWritingModeEnabled },
                                 set: { enabled in
                                     Task { await controller.setJevAutoWritingModeEnabled(enabled) }
@@ -133,7 +133,7 @@ struct JevIntelligenceSettingsView: View {
                             .font(.body.weight(.medium))
                             .disabled(!controller.jevEnabled)
 
-                            Text("🎯 Context-aware formatting automatically tuned for Ghostty, Bear, Safari, ChatGPT, Antinote, and more.")
+                            Text("Adapts formatting instructions based on the active target application.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 20)
@@ -143,7 +143,7 @@ struct JevIntelligenceSettingsView: View {
 
                         // Sub-toggle 3: Hallucination Guardrail
                         VStack(alignment: .leading, spacing: 4) {
-                            Toggle("Hallucination Guardrail (ignore phantom audio)", isOn: Binding(
+                            Toggle("Hallucination Guardrail", isOn: Binding(
                                 get: { controller.jevHallucinationGuardrailEnabled },
                                 set: { enabled in
                                     Task { await controller.setJevHallucinationGuardrailEnabled(enabled) }
@@ -152,7 +152,7 @@ struct JevIntelligenceSettingsView: View {
                             .font(.body.weight(.medium))
                             .disabled(!controller.jevEnabled)
 
-                            Text("🛡️ Detects and silences phantom subtitles, repeated loops, and background noise artifacts (Ignored phantom audio).")
+                            Text("Silences repetitive transcription loops and background noise artifacts before insertion.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 20)

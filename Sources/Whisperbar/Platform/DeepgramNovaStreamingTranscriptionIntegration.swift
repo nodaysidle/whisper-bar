@@ -21,6 +21,9 @@ enum DeepgramSocketError: Error, Equatable, Sendable {
     case transport
     case timedOut
     case closed(code: Int, reason: String)
+    /// The socket is still open and no frame arrived during this poll.
+    /// This is not a connection failure.
+    case pollIdle
 }
 
 /// An accepted WebSocket upgrade plus the provider request identifier when the
@@ -51,6 +54,9 @@ protocol DeepgramSocketFactory: Sendable {
 final class URLSessionDeepgramSocketSession: DeepgramSocketSession, @unchecked Sendable {
     private let task: URLSessionWebSocketTask
     private let session: URLSession
+    /// One in-flight `receive` that outlives a poll. Cancelling the poll must
+    /// not cancel this task, or the WebSocket read would be abandoned.
+    private var inflight: Task<DeepgramSocketFrame?, Error>?
 
     init(task: URLSessionWebSocketTask, session: URLSession) {
         self.task = task
@@ -76,6 +82,41 @@ final class URLSessionDeepgramSocketSession: DeepgramSocketSession, @unchecked S
     }
 
     func receive() async throws -> DeepgramSocketFrame? {
+        if inflight == nil {
+            let task = self.task
+            inflight = Task {
+                try await Self.readFrame(from: task)
+            }
+        }
+        guard let inflight else { throw DeepgramSocketError.transport }
+        let arrived = await Self.waitForFrame(inflight, limit: .milliseconds(40))
+        guard arrived else { throw DeepgramSocketError.pollIdle }
+        self.inflight = nil
+        return try await inflight.value
+    }
+
+    /// Waits until `read` finishes or the poll limit elapses. The read task is
+    /// not a child of this wait, so a short poll does not cancel the socket.
+    private static func waitForFrame(
+        _ read: Task<DeepgramSocketFrame?, Error>,
+        limit: Duration
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                _ = try? await read.value
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: limit)
+                return false
+            }
+            let arrived = await group.next() ?? false
+            group.cancelAll()
+            return arrived
+        }
+    }
+
+    private static func readFrame(from task: URLSessionWebSocketTask) async throws -> DeepgramSocketFrame? {
         do {
             let message = try await task.receive()
             switch message {
@@ -597,6 +638,8 @@ actor DeepgramNovaStreamingTranscriptionIntegration {
             let frame: DeepgramSocketFrame?
             do {
                 frame = try await socket.receive()
+            } catch DeepgramSocketError.pollIdle {
+                return
             } catch let error as DeepgramSocketError {
                 if let failure = Self.mapSocketError(error) {
                     _ = await fail(failure)
@@ -673,8 +716,19 @@ actor DeepgramNovaStreamingTranscriptionIntegration {
             let session = connected.session
             var requestID = connected.providerRequestID
             try await session.send(text: Self.closeStreamFrame)
-            while true {
-                guard let frame = try await session.receive() else { break }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+            var finished = false
+            while ContinuousClock.now < deadline {
+                let frame: DeepgramSocketFrame?
+                do {
+                    frame = try await session.receive()
+                } catch DeepgramSocketError.pollIdle {
+                    continue
+                }
+                guard let frame else {
+                    finished = true
+                    break
+                }
                 guard case .text(let text) = frame,
                       let data = text.data(using: .utf8),
                       let event = try? DeepgramStreamEvent.decode(from: data) else {
@@ -682,10 +736,12 @@ actor DeepgramNovaStreamingTranscriptionIntegration {
                 }
                 if case .metadata(let summary) = event {
                     requestID = summary.requestID ?? requestID
+                    finished = true
                     break
                 }
             }
             await session.close()
+            guard finished else { return .failed(.timedOut) }
             return .succeeded(requestID: requestID)
         } catch let error as DeepgramSocketError {
             return .failed(Self.mapSocketError(error) ?? .transport)
@@ -826,6 +882,8 @@ actor DeepgramNovaStreamingTranscriptionIntegration {
             return .transport
         case .timedOut:
             return .timedOut
+        case .pollIdle:
+            return nil
         case .closed(let code, let reason):
             if reason.contains("DATA-0000") { return .malformedAudio }
             if reason.contains("NET-0000") { return .insufficientAudioTimeout }

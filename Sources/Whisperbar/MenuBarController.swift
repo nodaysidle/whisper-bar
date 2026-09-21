@@ -59,7 +59,6 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppWire.controller?.applicationDidFinishLaunching()
-        AppWire.controller?.openMainWindow()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -81,9 +80,7 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     /// exactly one `reply(toApplicationShouldTerminate:)` follows. Answering
     /// `.terminateNow` would end the process before those releases ran.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard AppWire.controller?.isTerminationRequested == true else {
-            return .terminateCancel
-        }
+        AppWire.controller?.isTerminationRequested = true
         return requestAwaitedTermination { allow in
             sender.reply(toApplicationShouldTerminate: allow)
         }
@@ -145,6 +142,20 @@ struct SystemSaveDestinationChooser {
 final class MenuBarController {
 
     // MARK: Presentation state
+
+    enum SessionPhase: Equatable, Sendable {
+        case idle
+        case recording
+        case refining
+        case blocked
+        case failed
+    }
+
+    var sessionPhase: SessionPhase = .idle {
+        didSet {
+            updateMenuBarIcon()
+        }
+    }
 
     var statusText: String = "Idle" {
         didSet {
@@ -304,6 +315,11 @@ final class MenuBarController {
 
     private var activeSession: RecordingSession? {
         didSet {
+            if activeSession != nil {
+                sessionPhase = .recording
+            } else if sessionPhase == .recording {
+                sessionPhase = .idle
+            }
             updateMenuBarIcon()
         }
     }
@@ -482,7 +498,7 @@ final class MenuBarController {
     private(set) var restoreClipboardAfterPaste: Bool = false
 
     // MARK: - TypeSafe Jev Intelligence settings
-    private(set) var jevEnabled: Bool = true
+    private(set) var jevEnabled: Bool = false
     private(set) var jevSmartRefinementGateEnabled: Bool = true
     private(set) var jevAutoWritingModeEnabled: Bool = true
     private(set) var jevHallucinationGuardrailEnabled: Bool = true
@@ -517,7 +533,7 @@ final class MenuBarController {
         providerSelectionAndCostProtectionFeature: ProviderSelectionAndCostProtectionFeature? = nil,
         temporaryAudioCleanupFeature: TemporaryAudioCleanupFeature? = nil,
         saveDestinationChooser: (@MainActor (String) async -> TemporaryAudioCleanupFeature.SaveDestinationDecision)? = nil,
-        sessionTickInterval: Duration = .milliseconds(250),
+        sessionTickInterval: Duration = .milliseconds(40),
         keepDockIconVisible: Bool = true
     ) {
         self.sessionTickInterval = sessionTickInterval
@@ -711,9 +727,17 @@ final class MenuBarController {
         capture.onCancelControlRequested = { [weak self] in
             await self?.handleHudCancelControl()
         }
-        routing.onHudNotice = { [weak self] notice in
+        routing.onHudNotice = { [weak self] notice, phase in
             self?.statusText = notice
-            let delay: TimeInterval? = notice.contains("Refining") ? nil : 1.8
+            switch phase {
+            case .refining:
+                self?.sessionPhase = .refining
+            case .status:
+                if self?.sessionPhase == .refining {
+                    self?.sessionPhase = .idle
+                }
+            }
+            let delay: TimeInterval? = phase == .refining ? nil : 1.8
             self?.microphoneCaptureFeature.showStatusPill(notice, autoDismissDelay: delay)
         }
         // The input device, the buffer sink, and the non-activating floating
@@ -769,6 +793,9 @@ final class MenuBarController {
             lastErrorMessage = "Startup did not complete during \(reason). Nothing privileged was started; retry explicitly."
         }
         syncProviderPresentation()
+        if selectedProvider == nil {
+            _ = await selectProvider(.deepgramStreaming)
+        }
         if hotkeyConfiguration.isEmpty {
             _ = await useSafeDefaultHotkeys()
         }
@@ -790,7 +817,7 @@ final class MenuBarController {
         dualProviderRoutingFeature.setJevHallucinationGuardrailEnabled(jevHallucinationGuardrailEnabled)
         setupFlagsMonitor()
         await refreshRefinementPresentation()
-        await refreshTypesafeKeyStatus()
+        await refreshCredentialStatuses()
     }
 
     /// CON-LIFECYCLE-APPLICATION-TERMINATION, awaited: stop the active
@@ -887,6 +914,7 @@ final class MenuBarController {
             provider = authorized
         case .blocked(let failure):
             lastErrorMessage = failure.message
+            sessionPhase = .blocked
             statusText = "Recording blocked"
             // The session never started: the single recording state machine is
             // released so neither a shortcut nor the in-app controls stay
@@ -912,6 +940,7 @@ final class MenuBarController {
         ) else {
             lastErrorMessage = temporaryAudioCleanupFeature.lastFailure?.message
             syncTemporaryAudioPresentation()
+            sessionPhase = .blocked
             statusText = "Recording blocked"
             _ = providerSelectionAndCostProtectionFeature.cancelActivePaidRequest()
             globalHotkeysFeature.reportStartFailure()
@@ -942,6 +971,7 @@ final class MenuBarController {
         // provider request, and no recording.
         guard await microphoneCaptureFeature.resolveMicrophoneAuthorizationBeforeRoute() else {
             lastErrorMessage = microphoneCaptureFeature.lastFailure?.message
+            sessionPhase = .blocked
             statusText = "Recording blocked"
             _ = providerSelectionAndCostProtectionFeature.cancelActivePaidRequest()
             recordTemporaryAudioOutcome(await temporaryAudioCleanupFeature.cancelSession(recordingID: recordingID))
@@ -960,6 +990,7 @@ final class MenuBarController {
         // retained.
         guard let recordingURL = session.temporaryAudioURL else {
             lastErrorMessage = "The recording file location was unavailable, so the recording did not start."
+            sessionPhase = .blocked
             statusText = "Recording blocked"
             _ = providerSelectionAndCostProtectionFeature.cancelActivePaidRequest()
             recordTemporaryAudioOutcome(await temporaryAudioCleanupFeature.discardExplicitly(recordingID: recordingID))
@@ -971,6 +1002,7 @@ final class MenuBarController {
             try writer.begin()
         } catch {
             lastErrorMessage = "The recording file could not be prepared, so the recording did not start."
+            sessionPhase = .blocked
             statusText = "Recording blocked"
             _ = providerSelectionAndCostProtectionFeature.cancelActivePaidRequest()
             recordTemporaryAudioOutcome(await temporaryAudioCleanupFeature.discardExplicitly(recordingID: recordingID))
@@ -995,6 +1027,7 @@ final class MenuBarController {
                 recordTemporaryAudioOutcome(await temporaryAudioCleanupFeature.cancelSession(recordingID: recordingID))
                 lastErrorMessage = dualProviderRoutingFeature.lastFailure?.message
                     ?? "The selected transcription route could not start, so no recording was made; retry explicitly."
+                sessionPhase = .blocked
                 statusText = "Recording blocked"
                 globalHotkeysFeature.reportStartFailure()
                 return
@@ -1177,6 +1210,7 @@ final class MenuBarController {
         recordTemporaryAudioOutcome(await temporaryAudioCleanupFeature.cancelSession(recordingID: session.recordingID))
         syncInterimTranscript()
         lastErrorMessage = microphoneCaptureFeature.lastFailure?.message
+        sessionPhase = .blocked
         statusText = "Recording blocked"
         globalHotkeysFeature.reportStartFailure()
     }
@@ -1219,6 +1253,7 @@ final class MenuBarController {
         lastErrorMessage = message
             ?? dualProviderRoutingFeature.lastFailure?.message
             ?? "The recording failed. No automatic retry or fallback occurs; retry explicitly."
+        sessionPhase = .failed
         statusText = "Recording failed"
         // Keep the hotkey state machine honest; it never fires while it is
         // not recording, and the emitted stop maps to no active session.
@@ -1291,10 +1326,21 @@ final class MenuBarController {
         await drainAudioFrameDelivery()
         await dualProviderRoutingFeature.stopAndFinalize()
         let parameters = customWritingFeature.parameters
-        guard let outcome = await dualProviderRoutingFeature.completeLiveStream(
-            modeName: parameters.modeName,
-            modeInstructions: parameters.modeInstructions
-        ) else {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        var outcome: DualProviderRoutingFeature.Outcome?
+        while ContinuousClock.now < deadline {
+            if let completed = await dualProviderRoutingFeature.completeLiveStream(
+                modeName: parameters.modeName,
+                modeInstructions: parameters.modeInstructions
+            ) {
+                outcome = completed
+                break
+            }
+            if case .failed = dualProviderRoutingFeature.state { break }
+            if case .cancelled = dualProviderRoutingFeature.state { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard let outcome else {
             // Failure, cancellation, or an empty final transcript: no history
             // record and no insertion may follow.
             await failActiveRecordingSession(session)
@@ -1711,8 +1757,14 @@ final class MenuBarController {
     /// shortcut and the in-app Cancel control run (route cancellation,
     /// paid-request cancellation, temporary audio deleted with verified
     /// absence) — so a HUD cancel ends cost and cleanup, not only capture.
-    private func handleHudCancelControl() async {
-        _ = await cancelInAppRecording()
+    func handleHudCancelControl() async {
+        if isRecordingSessionActive || isRecordingSessionInFlight {
+            _ = await cancelInAppRecording()
+        } else {
+            microphoneCaptureFeature.clearStatusPill()
+            sessionPhase = .idle
+            statusText = "Ready"
+        }
     }
 
     // MARK: Interim streaming text (presentation only)
@@ -1856,6 +1908,16 @@ final class MenuBarController {
     static let optionModifier: UInt32 = 2048
     static let controlModifier: UInt32 = 4096
     static let hyperModifier: UInt32 = controlModifier | optionModifier | shiftModifier | commandModifier
+
+    /// Converts Cocoa NSEvent.ModifierFlags to Carbon modifier bits.
+    static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+        var mods: UInt32 = 0
+        if flags.contains(.control) { mods |= controlModifier }
+        if flags.contains(.option) { mods |= optionModifier }
+        if flags.contains(.shift) { mods |= shiftModifier }
+        if flags.contains(.command) { mods |= commandModifier }
+        return mods
+    }
 
     /// The deterministic safe default a fresh install can apply in one action:
     /// control+option plus two distinct keys, so the combination can never
@@ -2514,13 +2576,14 @@ final class MenuBarController {
 
     /// Update status item icon symbol ensuring crispness and responsive visual state.
     func updateMenuBarIcon() {
-        if isRecordingSessionActive {
+        switch sessionPhase {
+        case .recording:
             menuBarSystemImageName = "waveform.circle.fill"
-        } else if statusText.contains("Refining") {
+        case .refining:
             menuBarSystemImageName = "sparkles"
-        } else if statusText.contains("blocked") || statusText.contains("failed") {
+        case .blocked, .failed:
             menuBarSystemImageName = "waveform.slash"
-        } else {
+        case .idle:
             menuBarSystemImageName = "waveform"
         }
     }
@@ -2675,1285 +2738,3 @@ final class SettingsWindowDelegate: NSObject, NSWindowDelegate {
     }
 }
 
-// MARK: - Settings tabs
-
-/// The settings tabs of the dedicated settings window (CON-LIFECYCLE-PRESET).
-/// A fresh install opens on `.setup`, where every required action has a visible
-/// in-app control; nothing that the product requires can only be done through
-/// an API.
-enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
-    case setup
-    case intelligence
-    case providers
-    case hotkeys
-    case modes
-    case history
-    case paste
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .setup: return "Setup"
-        case .intelligence: return "Intelligence"
-        case .providers: return "Providers & Keys"
-        case .hotkeys: return "Shortcuts"
-        case .modes: return "Modes & Vocabulary"
-        case .history: return "History"
-        case .paste: return "Paste & Permissions"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .setup: return "checklist"
-        case .intelligence: return "sparkles"
-        case .providers: return "key"
-        case .hotkeys: return "keyboard"
-        case .modes: return "text.badge.plus"
-        case .history: return "clock.arrow.circlepath"
-        case .paste: return "doc.on.clipboard"
-        }
-    }
-}
-
-/// Stable identifiers of every user-facing control. The contract tests fail if
-/// one of these controls disappears from the surface, so a capability can never
-/// silently regress into an API-only path.
-enum MenuControlID {
-    static let recordStart = "whisperbar.control.recordStart"
-    static let recordStop = "whisperbar.control.recordStop"
-    static let recordCancel = "whisperbar.control.recordCancel"
-    static let recordingMode = "whisperbar.control.recordingMode"
-    static let providerPicker = "whisperbar.control.providerPicker"
-    static let temporaryAudioSave = "whisperbar.control.temporaryAudioSave"
-    static let temporaryAudioDiscard = "whisperbar.control.temporaryAudioDiscard"
-    static let temporaryAudioRetryCleanup = "whisperbar.control.temporaryAudioRetryCleanup"
-    static let credentialField = "whisperbar.control.credentialField"
-    static let credentialSave = "whisperbar.control.credentialSave"
-    static let credentialDelete = "whisperbar.control.credentialDelete"
-    static let credentialTest = "whisperbar.control.credentialTest"
-    static let credentialRefresh = "whisperbar.control.credentialRefresh"
-    static let hotkeyPushToTalk = "whisperbar.control.hotkeyPushToTalk"
-    static let hotkeyToggle = "whisperbar.control.hotkeyToggle"
-    static let hotkeyApply = "whisperbar.control.hotkeyApply"
-    static let hotkeySafeDefault = "whisperbar.control.hotkeySafeDefault"
-    static let hotkeyRetry = "whisperbar.control.hotkeyRetry"
-    static let modeName = "whisperbar.control.modeName"
-    static let modeInstructions = "whisperbar.control.modeInstructions"
-    static let modeSave = "whisperbar.control.modeSave"
-    static let modeDelete = "whisperbar.control.modeDelete"
-    static let vocabularyField = "whisperbar.control.vocabularyField"
-    static let vocabularyAdd = "whisperbar.control.vocabularyAdd"
-    static let vocabularyRemove = "whisperbar.control.vocabularyRemove"
-    static let historySearch = "whisperbar.control.historySearch"
-    static let historyCopy = "whisperbar.control.historyCopy"
-    static let historyDelete = "whisperbar.control.historyDelete"
-    static let historyReload = "whisperbar.control.historyReload"
-    static let pasteApprove = "whisperbar.control.pasteApprove"
-    static let pasteCancel = "whisperbar.control.pasteCancel"
-    static let pasteCopyRetained = "whisperbar.control.pasteCopyRetained"
-    static let pasteRetry = "whisperbar.control.pasteRetry"
-    static let refinementToggle = "whisperbar.control.refinementToggle"
-    static let permissionRefresh = "whisperbar.control.permissionRefresh"
-    static let permissionRequest = "whisperbar.control.permissionRequest"
-    static let launchAtLoginToggle = "whisperbar.control.launchAtLoginToggle"
-    static let settingsTab = "whisperbar.control.settingsTab"
-}
-
-// MARK: - Menu content
-
-struct MenuBarContent: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: controller.menuBarSystemImageName)
-                Text(AppIdentity.appName)
-                    .font(.headline)
-                Spacer()
-                Text(controller.statusText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let message = controller.lastErrorMessage {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Divider()
-
-            DictationControls(controller: controller)
-
-            Divider()
-
-            ProviderQuickPicker(controller: controller)
-
-            if controller.showsTemporaryAudioRecoveryControls {
-                Divider()
-                TemporaryAudioRecoveryControls(controller: controller)
-            }
-
-            if controller.isPreviewAwaitingApproval {
-                Divider()
-                PastePreviewControls(controller: controller)
-            }
-
-            Divider()
-
-            HStack {
-                Button("Settings…") {
-                    controller.openMainWindow()
-                }
-                .keyboardShortcut(",", modifiers: .command)
-
-                Spacer()
-
-                Button("Quit WhisperBar") {
-                    controller.requestTermination()
-                }
-                .keyboardShortcut("q", modifiers: .command)
-            }
-        }
-        .padding(16)
-        .frame(width: 360)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("WhisperBar menu")
-    }
-}
-
-/// The in-app record/stop/cancel controls, shared by the menu and the setup
-/// surface. They drive the same one session state machine the global shortcuts
-/// drive, so dictation is available on a fresh install without any shortcut.
-struct DictationControls: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Dictation")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Picker("Recording mode", selection: $controller.inAppRecordingMode) {
-                Text("Push-to-talk").tag(HotkeyMode.pushToTalk)
-                Text("Toggle").tag(HotkeyMode.toggle)
-            }
-            .pickerStyle(.segmented)
-            .disabled(controller.isRecordingSessionInFlight)
-            .accessibilityIdentifier(MenuControlID.recordingMode)
-            .accessibilityLabel("In-app recording mode")
-
-            HStack {
-                Button("Start recording") {
-                    Task { _ = await controller.startInAppRecording() }
-                }
-                .disabled(controller.isRecordingSessionInFlight)
-                .accessibilityIdentifier(MenuControlID.recordStart)
-                .accessibilityLabel("Start recording")
-
-                Button("Stop") {
-                    Task { _ = await controller.stopInAppRecording() }
-                }
-                .disabled(!controller.isRecordingSessionInFlight)
-                .accessibilityIdentifier(MenuControlID.recordStop)
-                .accessibilityLabel("Stop recording and transcribe")
-
-                Button("Cancel") {
-                    Task { _ = await controller.cancelInAppRecording() }
-                }
-                .disabled(!controller.isRecordingSessionInFlight)
-                .accessibilityIdentifier(MenuControlID.recordCancel)
-                .accessibilityLabel("Cancel recording")
-            }
-
-            if controller.isRecordingSessionInFlight, !controller.interimTranscript.isEmpty {
-                Text(controller.interimTranscript)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Interim transcript")
-            }
-        }
-    }
-}
-
-/// The compact provider picker of the menu. It writes the explicit selection to
-/// both owners through the one controller action, so the two can never drift.
-struct ProviderQuickPicker: View {
-    let controller: MenuBarController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Transcription provider")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Picker("Provider", selection: providerSelection) {
-                Text("No provider (recording stays blocked)").tag(TranscriptionProviderID?.none)
-                ForEach(TranscriptionProviderID.allCases, id: \.self) { provider in
-                    Text(provider.displayName).tag(TranscriptionProviderID?.some(provider))
-                }
-            }
-            .labelsHidden()
-            .disabled(controller.isProviderSelectionLocked)
-            .accessibilityIdentifier(MenuControlID.providerPicker)
-            .accessibilityLabel("Transcription provider")
-
-            Text(controller.providerSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let feedback = controller.providerFeedback {
-                Text(feedback)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var providerSelection: Binding<TranscriptionProviderID?> {
-        Binding(
-            get: { controller.selectedProvider },
-            set: { newValue in
-                Task { _ = await controller.selectProvider(newValue) }
-            }
-        )
-    }
-}
-
-/// Step 14 of CON-PASTE-WORKFLOW: a waiting preview inserts nothing until it is
-/// explicitly approved, and cancelling preserves the complete transcript.
-struct PastePreviewControls: View {
-    let controller: MenuBarController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Preview awaiting approval")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            if let preview = controller.pendingPreviewText {
-                Text(preview)
-                    .font(.callout)
-                    .lineLimit(4)
-                    .accessibilityLabel("Transcript preview")
-            }
-            HStack {
-                Button("Insert") {
-                    Task { _ = await controller.approvePastePreview() }
-                }
-                .accessibilityIdentifier(MenuControlID.pasteApprove)
-                .accessibilityLabel("Approve preview and insert")
-
-                Button("Cancel preview") {
-                    _ = controller.cancelPastePreview()
-                }
-                .accessibilityIdentifier(MenuControlID.pasteCancel)
-                .accessibilityLabel("Cancel preview")
-            }
-        }
-    }
-}
-
-/// Temporary-audio recovery controls (CON-TEMPORARY-AUDIO-CLEANUP-RECOVERY):
-/// after a recoverable provider failure the retained recording can be saved
-/// to a user-chosen destination or explicitly discarded, and a cleanup that
-/// could not verify absence has its own explicit retry. Nothing here happens
-/// automatically, and every control runs the authoritative owner action.
-struct TemporaryAudioRecoveryControls: View {
-    let controller: MenuBarController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Recording recovery")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            if let feedback = controller.temporaryAudioFeedback {
-                Text(feedback)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack {
-                if controller.canActOnRetainedTemporaryRecording {
-                    Button("Save recording…") {
-                        Task { _ = await controller.saveTemporaryRecordingExplicitly() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.temporaryAudioSave)
-                    .accessibilityLabel("Save the retained recording")
-
-                    Button("Discard recording") {
-                        Task { _ = await controller.discardTemporaryRecordingExplicitly() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.temporaryAudioDiscard)
-                    .accessibilityLabel("Discard the retained recording")
-                }
-
-                if controller.isTemporaryAudioCleanupPending {
-                    Button("Retry cleanup") {
-                        Task { _ = await controller.retryTemporaryAudioCleanupExplicitly() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.temporaryAudioRetryCleanup)
-                    .accessibilityLabel("Retry temporary audio cleanup")
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Settings root
-
-struct SettingsRoot: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        TabView(selection: $controller.selectedSettingsTab) {
-            SetupSettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.setup.displayName, systemImage: SettingsTab.setup.systemImage) }
-                .tag(SettingsTab.setup)
-            JevIntelligenceSettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.intelligence.displayName, systemImage: SettingsTab.intelligence.systemImage) }
-                .tag(SettingsTab.intelligence)
-            ProvidersSettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.providers.displayName, systemImage: SettingsTab.providers.systemImage) }
-                .tag(SettingsTab.providers)
-            HotkeysSettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.hotkeys.displayName, systemImage: SettingsTab.hotkeys.systemImage) }
-                .tag(SettingsTab.hotkeys)
-            ModesSettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.modes.displayName, systemImage: SettingsTab.modes.systemImage) }
-                .tag(SettingsTab.modes)
-            HistorySettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.history.displayName, systemImage: SettingsTab.history.systemImage) }
-                .tag(SettingsTab.history)
-            PasteSettingsView(controller: controller)
-                .tabItem { Label(SettingsTab.paste.displayName, systemImage: SettingsTab.paste.systemImage) }
-                .tag(SettingsTab.paste)
-        }
-        .padding(16)
-        .accessibilityIdentifier(MenuControlID.settingsTab)
-        .accessibilityLabel("WhisperBar settings tabs")
-    }
-}
-
-// MARK: - Setup tab
-
-/// The deterministic first-run path: one ordered list of the required steps,
-/// each with a reachable in-app control, plus the in-app dictation controls so a
-/// fresh install can dictate before any shortcut exists.
-struct SetupSettingsView: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        Form {
-            Section("Status") {
-                LabeledContent("Application", value: AppIdentity.appName)
-                LabeledContent("Status", value: controller.statusText)
-                LabeledContent("Local history", value: controller.storageSummary)
-                Button("Refresh status") {
-                    Task {
-                        await controller.refreshStorageSummary()
-                        await controller.refreshPermissionStates()
-                    }
-                }
-                .accessibilityIdentifier(MenuControlID.permissionRefresh)
-                .accessibilityLabel("Refresh status")
-            }
-
-            Section("Setup steps") {
-                SetupStepRow(
-                    step: 1,
-                    title: "Choose a transcription provider",
-                    detail: controller.providerSummary,
-                    actionTitle: "Open Providers & Keys"
-                ) {
-                    controller.selectedSettingsTab = .providers
-                }
-
-                SetupStepRow(
-                    step: 2,
-                    title: "Add the API key for the selected provider",
-                    detail: credentialDetail,
-                    actionTitle: "Enter the API key"
-                ) {
-                    controller.selectedSettingsTab = .providers
-                }
-
-                SetupStepRow(
-                    step: 3,
-                    title: "Grant Microphone access for dictation",
-                    detail: "Microphone: \(permissionText(.microphone))",
-                    actionTitle: "Request Microphone access"
-                ) {
-                    Task { _ = await controller.requestPermission(.microphone) }
-                }
-
-                SetupStepRow(
-                    step: 4,
-                    title: "Set up the global shortcuts (optional — the in-app controls always work)",
-                    detail: controller.hotkeyRegistrationSummary,
-                    actionTitle: "Use safe defaults"
-                ) {
-                    Task { _ = await controller.useSafeDefaultHotkeys() }
-                }
-
-                SetupStepRow(
-                    step: 5,
-                    title: "Try dictation from here",
-                    detail: "Start, stop, or cancel a recording with the in-app controls.",
-                    actionTitle: nil,
-                    action: nil
-                )
-                DictationControls(controller: controller)
-            }
-
-            Section("Startup") {
-                Toggle("Launch WhisperBar at login", isOn: Binding(
-                    get: { controller.launchAtLoginStatus == .enabled },
-                    set: { enabled in Task { _ = await controller.setLaunchAtLogin(enabled) } }
-                ))
-                .accessibilityIdentifier(MenuControlID.launchAtLoginToggle)
-                .accessibilityLabel("Launch WhisperBar at login")
-
-                Text("Launch at login: \(MenuBarController.describe(loginItemStatus: controller.launchAtLoginStatus))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let feedback = controller.launchAtLoginFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let guidance = controller.permissionGuidance(for: .backgroundStartup) {
-                    Text(guidance)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            if let message = controller.lastErrorMessage {
-                Section("Attention") {
-                    Text(message)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("Privacy") {
-                Text("WhisperBar keeps transcripts, credentials, and audio inside their declared local boundaries. Credentials live only in the macOS Keychain; audio exists only for the active request.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var credentialDetail: String {
-        guard let provider = controller.selectedProvider else {
-            return "Select a provider first; recording stays blocked until you do."
-        }
-        let key: CredentialKey = switch provider {
-        case .deepgramStreaming: .deepgramNovaStreamingTranscription
-        case .openRouterBatch: .openRouter
-        }
-        switch controller.credentialStatuses[key] ?? .missing {
-        case .configured: return "A \(key.displayName) key is stored in the Keychain."
-        case .missing: return "No \(key.displayName) key is stored yet."
-        case .unavailable: return "The \(key.displayName) key could not be read from the Keychain."
-        }
-    }
-
-    private func permissionText(_ domain: PermissionDomain) -> String {
-        guard let state = controller.permissionStates[domain] else {
-            return "not checked yet — use Refresh status"
-        }
-        return MenuBarController.describe(permissionState: state)
-    }
-}
-
-/// One numbered setup step with a single deterministic action.
-struct SetupStepRow: View {
-    let step: Int
-    let title: String
-    let detail: String
-    let actionTitle: String?
-    let action: (() -> Void)?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(step).")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Text(title)
-                    .font(.callout)
-            }
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-                    .accessibilityLabel(actionTitle)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-}
-
-// MARK: - Providers tab
-
-struct ProvidersSettingsView: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        Form {
-            Section("Transcription provider") {
-                ProviderQuickPicker(controller: controller)
-                Text("The selection is explicit and stays fixed for a recording. WhisperBar never switches providers, never falls back, and never retries a paid request automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Section("API keys (stored only in the macOS Keychain)") {
-                HStack {
-                    Button("Refresh key status") {
-                        Task { await controller.refreshCredentialStatuses() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.credentialRefresh)
-                    .accessibilityLabel("Refresh key status")
-                    Text("Only a value-free status is shown; a stored key is never read back.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(CredentialKey.allCases, id: \.self) { key in
-                    CredentialRow(controller: controller, key: key)
-                }
-                if let feedback = controller.credentialFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("Optional refinement (OpenRouter)") {
-                Toggle("Refine each transcript with the selected writing mode", isOn: Binding(
-                    get: { controller.refinementEnabled },
-                    set: { enabled in Task { _ = await controller.setRefinementEnabled(enabled) } }
-                ))
-                .accessibilityIdentifier(MenuControlID.refinementToggle)
-                .accessibilityLabel("Enable optional refinement")
-
-                Text("Refinement stays off until it is explicitly enabled, uses the stored OpenRouter key, and never replaces the accepted transcript when it fails.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let feedback = controller.refinementFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-/// One provider credential: entry, save, delete, and test. The entered value is
-/// handed to the vault once and never read back into presentation state.
-struct CredentialRow: View {
-    let controller: MenuBarController
-    let key: CredentialKey
-
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(key.displayName)
-                    .font(.headline)
-                Spacer()
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            SecureField("Paste the \(key.displayName) API key", text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier(MenuControlID.credentialField)
-                .accessibilityLabel("\(key.displayName) API key entry")
-
-            HStack {
-                Button("Save key") {
-                    let value = draft
-                    Task {
-                        if await controller.saveCredential(value, for: key) {
-                            draft = ""
-                        }
-                    }
-                }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier(MenuControlID.credentialSave)
-                .accessibilityLabel("Save \(key.displayName) API key")
-
-                Button("Delete key") {
-                    Task { _ = await controller.deleteCredential(for: key) }
-                }
-                .disabled(!isConfigured)
-                .accessibilityIdentifier(MenuControlID.credentialDelete)
-                .accessibilityLabel("Delete the stored \(key.displayName) API key")
-
-                Button("Test connection") {
-                    Task { _ = await controller.testCredentialConnection(for: key) }
-                }
-                .disabled(!isConfigured)
-                .accessibilityIdentifier(MenuControlID.credentialTest)
-                .accessibilityLabel("Test the \(key.displayName) connection")
-            }
-
-            if let blocking = controller.credentialBlockingMessage(for: key) {
-                Text(blocking)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var isConfigured: Bool {
-        controller.credentialStatuses[key] == .configured
-    }
-
-    private var statusText: String {
-        switch controller.credentialStatuses[key] ?? .missing {
-        case .configured: return "A key is stored"
-        case .missing: return "No key stored"
-        case .unavailable: return "Keychain unavailable"
-        }
-    }
-}
-
-// MARK: - Shortcuts tab
-
-/// The editable shortcut setup: a safe default in one action, per-role key and
-/// modifier editors, and an explicit conflict-retry path. A rejected
-/// configuration leaves the previous shortcuts and the stored configuration
-/// untouched.
-struct HotkeysSettingsView: View {
-    @Bindable var controller: MenuBarController
-
-    @State private var pushToTalkKeyCode: UInt32 = 2
-    @State private var pushToTalkModifiers: UInt32 = MenuBarController.controlModifier | MenuBarController.optionModifier
-    @State private var toggleKeyCode: UInt32 = 17
-    @State private var toggleModifiers: UInt32 = MenuBarController.controlModifier | MenuBarController.optionModifier
-    @State private var didLoad = false
-
-    var body: some View {
-        Form {
-            Section("Active shortcuts") {
-                Text(controller.hotkeyRegistrationSummary)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-                LabeledContent("Push-to-talk", value: MenuBarController.describeHotkey(controller.hotkeyConfiguration.pushToTalk))
-                LabeledContent("Toggle", value: MenuBarController.describeHotkey(controller.hotkeyConfiguration.toggle))
-                HStack {
-                    Button("Retry registration") {
-                        Task { _ = await controller.retryHotkeyRegistration() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.hotkeyRetry)
-                    .accessibilityLabel("Retry shortcut registration")
-
-                    Button("Reload stored shortcuts") {
-                        Task { await controller.loadHotkeyConfiguration() }
-                    }
-                    .accessibilityLabel("Reload the stored shortcuts")
-                }
-                if let feedback = controller.hotkeyFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("Presets") {
-                HStack(spacing: 12) {
-                    Button("Safe defaults (⌃⌥D / ⌃⌥T)") {
-                        Task { _ = await controller.useSafeDefaultHotkeys() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.hotkeySafeDefault)
-                    .accessibilityLabel("Use the safe default shortcuts")
-
-                    Button("Karabiner Hyperkey (⌃⌥⇧⌘T / ⌃⌥⇧⌘D)") {
-                        Task { _ = await controller.useKarabinerHyperkeyPreset() }
-                    }
-                    .accessibilityLabel("Use Karabiner Hyperkey shortcuts")
-                }
-                Text("Hyperkey preset sets ⌃⌥⇧⌘T for toggle mode and ⌃⌥⇧⌘D for push-to-talk (standard Karabiner ⌃⌥⇧⌘ mapping).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Fn (Globe) Key Push-to-Talk") {
-                Toggle("Use Fn (Globe) key for Push-to-Talk", isOn: Binding(
-                    get: { controller.useFnKeyForPushToTalk },
-                    set: { newValue in
-                        Task { await controller.setUseFnKeyForPushToTalk(newValue) }
-                    }
-                ))
-                Text("Press and hold the Fn (Globe) key to speak, release to finish and paste. Works alongside global hotkeys.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Push-to-talk shortcut") {
-                HotkeyEditorRow(
-                    keyCode: $pushToTalkKeyCode,
-                    modifiers: $pushToTalkModifiers,
-                    label: "Push-to-talk shortcut"
-                )
-                .accessibilityIdentifier(MenuControlID.hotkeyPushToTalk)
-            }
-
-            Section("Toggle shortcut") {
-                HotkeyEditorRow(
-                    keyCode: $toggleKeyCode,
-                    modifiers: $toggleModifiers,
-                    label: "Toggle shortcut"
-                )
-                .accessibilityIdentifier(MenuControlID.hotkeyToggle)
-            }
-
-            Section("Apply") {
-                HStack {
-                    Button("Apply shortcuts") {
-                        Task {
-                            _ = await controller.applyHotkeyConfiguration(editedConfiguration)
-                        }
-                    }
-                    .accessibilityIdentifier(MenuControlID.hotkeyApply)
-                    .accessibilityLabel("Apply the edited shortcuts")
-
-                    Button("Disable global shortcuts") {
-                        Task { _ = await controller.applyHotkeyConfiguration(.empty) }
-                    }
-                    .accessibilityLabel("Disable global shortcuts")
-                }
-                Text("A shortcut needs at least one modifier and the two roles must differ. If a combination is already used by another application it is rejected with an explanation, the previous shortcuts stay active, and you can choose another combination and apply again. The in-app controls keep working either way.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .formStyle(.grouped)
-        .onAppear {
-            guard !didLoad else { return }
-            didLoad = true
-            syncEditorFromController()
-        }
-        .onChange(of: controller.hotkeyConfiguration) { _, _ in
-            syncEditorFromController()
-        }
-    }
-
-    private var editedConfiguration: HotkeyConfiguration {
-        HotkeyConfiguration(
-            pushToTalk: HotkeyIdentifier(keyCode: pushToTalkKeyCode, modifiers: pushToTalkModifiers),
-            toggle: HotkeyIdentifier(keyCode: toggleKeyCode, modifiers: toggleModifiers)
-        )
-    }
-
-    private func syncEditorFromController() {
-        if let pushToTalk = controller.hotkeyConfiguration.pushToTalk {
-            pushToTalkKeyCode = pushToTalk.keyCode
-            pushToTalkModifiers = pushToTalk.modifiers
-        }
-        if let toggle = controller.hotkeyConfiguration.toggle {
-            toggleKeyCode = toggle.keyCode
-            toggleModifiers = toggle.modifiers
-        }
-    }
-}
-
-/// One shortcut editor: the four Carbon modifier flags plus the editable key.
-struct HotkeyEditorRow: View {
-    @Binding var keyCode: UInt32
-    @Binding var modifiers: UInt32
-    let label: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                modifierToggle("⌃", flag: MenuBarController.controlModifier, name: "Control")
-                modifierToggle("⌥", flag: MenuBarController.optionModifier, name: "Option")
-                modifierToggle("⇧", flag: MenuBarController.shiftModifier, name: "Shift")
-                modifierToggle("⌘", flag: MenuBarController.commandModifier, name: "Command")
-                Button("Set Hyper (⌃⌥⇧⌘)") {
-                    modifiers = MenuBarController.hyperModifier
-                }
-                .buttonStyle(.borderless)
-                .font(.caption)
-            }
-
-            Picker("Key", selection: $keyCode) {
-                ForEach(MenuBarController.editableHotkeyKeys, id: \.keyCode) { entry in
-                    Text(entry.name).tag(entry.keyCode)
-                }
-            }
-            .accessibilityLabel("\(label) key")
-
-            Text("Current combination: \(MenuBarController.describeHotkey(HotkeyIdentifier(keyCode: keyCode, modifiers: modifiers)))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func modifierToggle(_ symbol: String, flag: UInt32, name: String) -> some View {
-        Toggle(symbol, isOn: Binding(
-            get: { modifiers & flag != 0 },
-            set: { isOn in
-                if isOn {
-                    modifiers |= flag
-                } else {
-                    modifiers &= ~flag
-                }
-            }
-        ))
-        .toggleStyle(.checkbox)
-        .accessibilityLabel("\(label) \(name) modifier")
-    }
-}
-
-// MARK: - Modes and vocabulary tab
-
-struct ModesSettingsView: View {
-    @Bindable var controller: MenuBarController
-
-    @State private var editorModeID: String?
-    @State private var modeName = ""
-    @State private var modeInstructions = ""
-    @State private var modeIsDefault = false
-    @State private var newTerm = ""
-
-    var body: some View {
-        Form {
-            Section("Writing modes") {
-                if controller.writingModes.isEmpty {
-                    Text("No writing mode is stored yet. Add one below; without a mode the locked default behavior applies.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(controller.writingModes) { mode in
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(mode.name)
-                                    .font(.callout)
-                                if mode.isDefault {
-                                    Text("default")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if controller.selectedWritingModeID == mode.id {
-                                    Text("selected")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Text(mode.instructions)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(3)
-                        }
-                        Spacer()
-                        Button("Select") {
-                            _ = controller.selectWritingMode(id: mode.id)
-                        }
-                        .accessibilityLabel("Select the \(mode.name) writing mode")
-                        Button("Edit") {
-                            editorModeID = mode.id
-                            modeName = mode.name
-                            modeInstructions = mode.instructions
-                            modeIsDefault = mode.isDefault
-                        }
-                        .accessibilityLabel("Edit the \(mode.name) writing mode")
-                        Button("Delete") {
-                            Task { _ = await controller.deleteWritingMode(id: mode.id) }
-                        }
-                        .accessibilityIdentifier(MenuControlID.modeDelete)
-                        .accessibilityLabel("Delete the \(mode.name) writing mode")
-                    }
-                }
-                HStack {
-                    Button("Use the locked default behavior") {
-                        _ = controller.selectWritingMode(id: nil)
-                    }
-                    .accessibilityLabel("Clear the selected writing mode")
-                    Button("Reload from storage") {
-                        Task { _ = await controller.reloadWritingConfiguration() }
-                    }
-                    .accessibilityLabel("Reload writing modes and vocabulary")
-                }
-                if let feedback = controller.writingFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section(editorModeID == nil ? "New writing mode" : "Edit writing mode") {
-                TextField("Name", text: $modeName)
-                    .accessibilityIdentifier(MenuControlID.modeName)
-                    .accessibilityLabel("Writing mode name")
-                TextField("Instructions", text: $modeInstructions, axis: .vertical)
-                    .lineLimit(3...6)
-                    .accessibilityIdentifier(MenuControlID.modeInstructions)
-                    .accessibilityLabel("Writing mode instructions")
-                Toggle("Use as the stored default mode", isOn: $modeIsDefault)
-                    .accessibilityLabel("Store as the default writing mode")
-                HStack {
-                    Button("Save mode") {
-                        Task {
-                            let saved = await controller.saveWritingMode(
-                                id: editorModeID,
-                                name: modeName,
-                                instructions: modeInstructions,
-                                isDefault: modeIsDefault
-                            )
-                            if saved {
-                                editorModeID = nil
-                                modeName = ""
-                                modeInstructions = ""
-                                modeIsDefault = false
-                            }
-                        }
-                    }
-                    .disabled(modeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || modeInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier(MenuControlID.modeSave)
-                    .accessibilityLabel("Save the writing mode")
-
-                    Button("Clear editor") {
-                        editorModeID = nil
-                        modeName = ""
-                        modeInstructions = ""
-                        modeIsDefault = false
-                    }
-                    .accessibilityLabel("Clear the writing mode editor")
-                }
-            }
-
-            Section("Vocabulary") {
-                HStack {
-                    TextField("Term", text: $newTerm)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier(MenuControlID.vocabularyField)
-                        .accessibilityLabel("Vocabulary term")
-                    Button("Add term") {
-                        let term = newTerm
-                        Task {
-                            if await controller.addVocabularyTerm(term) {
-                                newTerm = ""
-                            }
-                        }
-                    }
-                    .disabled(newTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier(MenuControlID.vocabularyAdd)
-                    .accessibilityLabel("Add the vocabulary term")
-                }
-                if controller.vocabularyTerms.isEmpty {
-                    Text("No vocabulary term is stored yet. Added terms are fed deterministically into transcription requests.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(controller.vocabularyTerms) { term in
-                    HStack {
-                        Text(term.term)
-                            .font(.callout)
-                        Spacer()
-                        Button("Remove") {
-                            Task { _ = await controller.removeVocabularyTerm(id: term.id) }
-                        }
-                        .accessibilityIdentifier(MenuControlID.vocabularyRemove)
-                        .accessibilityLabel("Remove the \(term.term) vocabulary term")
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-// MARK: - History tab
-
-struct HistorySettingsView: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        Form {
-            Section("Offline search") {
-                HStack {
-                    TextField("Search transcripts", text: $controller.historyQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier(MenuControlID.historySearch)
-                        .accessibilityLabel("Search transcripts")
-                        .onSubmit {
-                            Task { _ = await controller.searchHistory(controller.historyQuery) }
-                        }
-                    Button("Search") {
-                        Task { _ = await controller.searchHistory(controller.historyQuery) }
-                    }
-                    .accessibilityLabel("Search local history")
-                    Button("Show recent") {
-                        Task { _ = await controller.searchHistory("") }
-                    }
-                    .accessibilityLabel("Show the recent transcripts")
-                    Button("Reload") {
-                        Task { _ = await controller.reloadHistory() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.historyReload)
-                    .accessibilityLabel("Reload local history")
-                }
-
-                Text(controller.storageSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let feedback = controller.historyFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("Transcripts (\(controller.historyTranscripts.count))") {
-                if controller.historyTranscripts.isEmpty {
-                    Text("No stored transcript matches. Local history is bounded, offline-only, and never uploaded or synced anywhere.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(controller.historyTranscripts) { record in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(record.text)
-                            .font(.callout)
-                            .lineLimit(4)
-                            .fixedSize(horizontal: false, vertical: true)
-                        HStack {
-                            Text("\(record.provider.displayName) · \(record.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Copy") {
-                                _ = controller.copyHistoryEntry(id: record.id)
-                            }
-                            .accessibilityIdentifier(MenuControlID.historyCopy)
-                            .accessibilityLabel("Copy the transcript")
-                            Button("Delete") {
-                                Task { _ = await controller.deleteHistoryEntry(id: record.id) }
-                            }
-                            .accessibilityIdentifier(MenuControlID.historyDelete)
-                            .accessibilityLabel("Delete the transcript from local history")
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-// MARK: - Paste and permissions tab
-
-struct PasteSettingsView: View {
-    @Bindable var controller: MenuBarController
-
-    var body: some View {
-        Form {
-            Section("Insertion mode") {
-                Picker("Insertion mode", selection: Binding(
-                    get: { controller.pasteMode },
-                    set: { controller.setPasteMode($0) }
-                )) {
-                    Text("Auto-paste").tag(PasteMode.autoPaste)
-                    Text("Copy only").tag(PasteMode.copyOnly)
-                    Text("Preview first").tag(PasteMode.preview)
-                }
-                .accessibilityLabel("Insertion mode")
-
-                Text("Auto-paste prefers direct Accessibility insertion, snapshots the clipboard before any write, restores it only while WhisperBar still owns it, and never overwrites newer clipboard content. Copy-only leaves the transcript on the clipboard; preview inserts nothing until you approve it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let feedback = controller.pasteFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("Clipboard behavior") {
-                Toggle("Restore previous clipboard after auto-paste", isOn: Binding(
-                    get: { controller.restoreClipboardAfterPaste },
-                    set: { newValue in
-                        Task { await controller.setRestoreClipboardAfterPaste(newValue) }
-                    }
-                ))
-                Text("When disabled (default), the transcript remains on your clipboard so you can manually press ⌘V in apps like Antinote that reject synthetic paste events.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Preview and recovery") {
-                if let preview = controller.pendingPreviewText {
-                    Text("Waiting for explicit approval:")
-                        .font(.callout)
-                    Text(preview)
-                        .font(.callout)
-                        .lineLimit(6)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Button("Insert") {
-                            Task { _ = await controller.approvePastePreview() }
-                        }
-                        .accessibilityIdentifier(MenuControlID.pasteApprove)
-                        .accessibilityLabel("Approve preview and insert")
-                        Button("Cancel preview") {
-                            _ = controller.cancelPastePreview()
-                        }
-                        .accessibilityIdentifier(MenuControlID.pasteCancel)
-                        .accessibilityLabel("Cancel preview")
-                    }
-                } else {
-                    Text(controller.isPreviewAwaitingApproval
-                        ? "A preview is waiting for approval."
-                        : "No preview is waiting for approval.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let retained = controller.retainedPasteText {
-                    Text("Preserved after an insertion failure:")
-                        .font(.callout)
-                    Text(retained)
-                        .font(.callout)
-                        .lineLimit(6)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Button("Copy the transcript") {
-                            _ = controller.copyRetainedPasteText()
-                        }
-                        .accessibilityIdentifier(MenuControlID.pasteCopyRetained)
-                        .accessibilityLabel("Copy the preserved transcript")
-                        Button("Retry insertion") {
-                            Task { _ = await controller.retryPasteInsertion() }
-                        }
-                        .accessibilityIdentifier(MenuControlID.pasteRetry)
-                        .accessibilityLabel("Retry the insertion")
-                    }
-                }
-            }
-
-            Section("Permissions and access") {
-                HStack {
-                    Button("Refresh permission status") {
-                        Task { await controller.refreshPermissionStates() }
-                    }
-                    .accessibilityIdentifier(MenuControlID.permissionRefresh)
-                    .accessibilityLabel("Refresh permission status")
-                    Text("Every read is read-only; nothing is prompted.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                ForEach(PermissionDomain.allCases, id: \.self) { domain in
-                    PermissionRow(controller: controller, domain: domain)
-                }
-
-                if let feedback = controller.permissionFeedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-/// One permission or access domain: its value-free state, the actionable
-/// guidance, and the explicit request control where a prompt exists.
-struct PermissionRow: View {
-    let controller: MenuBarController
-    let domain: PermissionDomain
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(domain.displayName)
-                    .font(.callout)
-                Spacer()
-                Text(stateText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if domain.supportsExplicitRequest {
-                    Button("Request") {
-                        Task { _ = await controller.requestPermission(domain) }
-                    }
-                    .accessibilityIdentifier(MenuControlID.permissionRequest)
-                    .accessibilityLabel("Request \(domain.displayName) access")
-                }
-            }
-            if let guidance = controller.permissionGuidance(for: domain) {
-                Text(guidance)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let manual = controller.permissionManualPath(for: domain) {
-                Text(manual)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var stateText: String {
-        guard let state = controller.permissionStates[domain] else { return "not checked yet" }
-        return MenuBarController.describe(permissionState: state)
-    }
-}
-
-extension PermissionDomain {
-    /// The domains whose system prompt can be raised from the explicit request
-    /// control. Every other domain is managed entirely by its own explicit
-    /// toggle or by the operating system.
-    var supportsExplicitRequest: Bool {
-        switch self {
-        case .microphone, .accessibility, .notifications:
-            return true
-        case .clipboard, .globalInput, .filesystem, .network, .backgroundStartup:
-            return false
-        }
-    }
-}

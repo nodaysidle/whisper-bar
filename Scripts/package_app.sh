@@ -226,14 +226,30 @@ if [ "$INSTALL" -eq 1 ]; then
   [ -x "$lsregister" ] || die "lsregister not found"
   "$lsregister" -f "$INSTALL_TARGET" || die "LaunchServices registration failed"
 
-  open -b "$BUNDLE_ID" || die "LaunchServices launch failed"
-  sleep 2
+  # A still-running dist/ copy shares this bundle id. Quit it before launch so
+  # LaunchServices starts the installed bundle instead of reattaching.
+  osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8; do
+    if [ -z "$(lsappinfo find bundleid="$BUNDLE_ID" 2>/dev/null | head -1 || true)" ]; then
+      break
+    fi
+    sleep 0.4
+  done
+  pkill -x "$EXECUTABLE_NAME" >/dev/null 2>&1 || true
+  sleep 0.5
+
+  open "$INSTALL_TARGET" || die "LaunchServices launch failed"
+  sleep 3
   app_serial_number="$(lsappinfo find bundleid="$BUNDLE_ID" 2>/dev/null | head -1 || true)"
   [ -n "$app_serial_number" ] || die "running bundle identity verification failed: no registered '$BUNDLE_ID' application"
-  running_bundle_id="$(lsappinfo info -only bundleid "$app_serial_number" 2>/dev/null || true)"
-  case "$running_bundle_id" in
-    *"$BUNDLE_ID"*) log "install: launched and verified running bundle identity $running_bundle_id" ;;
-    *) die "running bundle identity verification failed: '$running_bundle_id' does not match '$BUNDLE_ID'" ;;
+  running_info="$(lsappinfo info "$app_serial_number" 2>/dev/null || true)"
+  case "$running_info" in
+    *"bundleID=\"$BUNDLE_ID\""*) ;;
+    *) die "running bundle identity verification failed: '$running_info' does not match '$BUNDLE_ID'" ;;
+  esac
+  case "$running_info" in
+    *"bundle path=\"/Applications/$APP_NAME.app\""*) log "install: launched $INSTALL_TARGET (bundle path verified)" ;;
+    *) die "running bundle path verification failed: expected bundle path=$INSTALL_TARGET in '$running_info'" ;;
   esac
 else
   log "no --install: /Applications was not touched (install requires separate explicit approval)"

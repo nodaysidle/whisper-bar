@@ -781,8 +781,10 @@ actor DataStore {
     }
 
     func isJevEnabled() -> Bool {
+        // Off unless the user turns it on. The fast path pastes the cloud
+        // transcript without waiting for a second model call.
         if userDefaults.object(forKey: SettingsKey.jevEnabled) == nil {
-            return true
+            return false
         }
         return userDefaults.bool(forKey: SettingsKey.jevEnabled)
     }

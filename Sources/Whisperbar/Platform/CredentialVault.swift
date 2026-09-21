@@ -172,7 +172,7 @@ actor CredentialVault {
             throw CredentialVaultError.invalidValue(key)
         }
         do {
-            try store.store(value: value, account: key.account, service: service)
+            try store.store(value: trimmed, account: key.account, service: service)
         } catch {
             // Classify against the still-valid prior state: a failed write while
             // a prior value exists is a replacement failure and the prior value

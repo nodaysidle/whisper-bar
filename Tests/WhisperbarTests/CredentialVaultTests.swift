@@ -159,6 +159,15 @@ struct CredentialVaultTests {
         #expect(store.entries.isEmpty)
     }
 
+    @Test("Credentials with surrounding whitespace and newlines are trimmed on storage")
+    func surroundingWhitespaceTrimmed() async throws {
+        let (vault, store) = Self.makeVault()
+        try await vault.store(.openRouter, value: "  \n sk-test-key-trimmed \t ")
+        let retrieved = try await vault.value(for: .openRouter)
+        #expect(retrieved == "sk-test-key-trimmed")
+        #expect(store.entries.first?.value == "sk-test-key-trimmed")
+    }
+
     @Test("Status maps to missing, configured, or unavailable without exposing values")
     func statusMapping() async throws {
         let (vault, _) = Self.makeVault()

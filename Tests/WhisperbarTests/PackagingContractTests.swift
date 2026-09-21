@@ -144,7 +144,8 @@ struct PackagingContractTests {
         // LaunchServices registration and identity-verified launch.
         #expect(script.contains("BUNDLE_ID=\"com.whisperbar.app\""))
         #expect(script.contains("lsregister"))
-        #expect(script.contains("open -b \"$BUNDLE_ID\""))
+        #expect(script.contains("open \"$INSTALL_TARGET\""), "launch the installed bundle path, not whichever copy shares the bundle id")
+        #expect(script.contains("bundle path="), "must verify the running bundle path is /Applications")
         #expect(script.contains("lsappinfo"), "must verify the running bundle identity")
         // Inside the install branch only: approval must gate the install copy.
         if let branchRange = script.range(of: branchMarker) {

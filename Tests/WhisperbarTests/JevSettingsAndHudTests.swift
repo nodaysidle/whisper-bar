@@ -7,7 +7,7 @@ struct JevSettingsAndHudTests {
 
     // MARK: - DataStore Persistence Tests
 
-    @Test("Jev settings default to enabled and persist modifications")
+    @Test("Jev stays off until enabled and persists modifications")
     func jevSettingsPersistence() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -19,8 +19,8 @@ struct JevSettingsAndHudTests {
             userDefaultsSuiteName: "test-jev-settings-\(UUID().uuidString)"
         )
 
-        // Defaults should all be true
-        #expect(await store.isJevEnabled() == true)
+        // The decision engine stays off until the user turns it on.
+        #expect(await store.isJevEnabled() == false)
         #expect(await store.isJevSmartRefinementGateEnabled() == true)
         #expect(await store.isJevAutoWritingModeEnabled() == true)
         #expect(await store.isJevHallucinationGuardrailEnabled() == true)
@@ -38,7 +38,7 @@ struct JevSettingsAndHudTests {
 
         // Reset
         await store.resetLightweightSettings()
-        #expect(await store.isJevEnabled() == true)
+        #expect(await store.isJevEnabled() == false)
         #expect(await store.isJevSmartRefinementGateEnabled() == true)
         #expect(await store.isJevAutoWritingModeEnabled() == true)
         #expect(await store.isJevHallucinationGuardrailEnabled() == true)
@@ -364,7 +364,7 @@ struct JevSettingsAndHudTests {
         )
         let controller = MenuBarController(dataStore: store)
 
-        #expect(controller.jevEnabled == true)
+        #expect(controller.jevEnabled == false)
         #expect(controller.jevSmartRefinementGateEnabled == true)
         #expect(controller.jevAutoWritingModeEnabled == true)
         #expect(controller.jevHallucinationGuardrailEnabled == true)

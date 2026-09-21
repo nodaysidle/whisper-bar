@@ -283,16 +283,20 @@ struct LifecycleCoordinatorTests {
         let controller = MenuBarController()
         #expect(controller.menuBarSystemImageName == "waveform")
 
-        // Refining notice updates icon to sparkles
-        controller.statusText = "Refining transcript…"
+        // Refining phase updates icon to sparkles
+        controller.sessionPhase = .refining
         #expect(controller.menuBarSystemImageName == "sparkles")
 
         // Blocked updates icon to waveform.slash
-        controller.statusText = "Recording blocked"
+        controller.sessionPhase = .blocked
         #expect(controller.menuBarSystemImageName == "waveform.slash")
 
-        // Ready restores crisp waveform
-        controller.statusText = "Ready"
+        // Failed updates icon to waveform.slash
+        controller.sessionPhase = .failed
+        #expect(controller.menuBarSystemImageName == "waveform.slash")
+
+        // Idle restores crisp waveform
+        controller.sessionPhase = .idle
         #expect(controller.menuBarSystemImageName == "waveform")
     }
 

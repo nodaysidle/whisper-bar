@@ -1269,6 +1269,8 @@ struct MenuBarControllerHudCompositionTests {
         #expect(room.factory.connectCount == 0)
         #expect(room.controller.isRecordingSessionActive == false)
         #expect(room.controller.statusText == "Recording blocked")
+        #expect(room.controller.sessionPhase == .blocked)
+        #expect(room.controller.menuBarSystemImageName == "waveform.slash")
         #expect(room.costProtection.state == .cancelled)
         #expect(room.costProtection.lastUsageDisplay == nil)
         // The prepared temporary audio was deleted with verified absence.
@@ -1343,6 +1345,8 @@ struct MenuBarControllerHudCompositionTests {
         }
 
         #expect(room.controller.statusText == "Recording failed")
+        #expect(room.controller.sessionPhase == .failed)
+        #expect(room.controller.menuBarSystemImageName == "waveform.slash")
         if case .failed = room.costProtection.state {
             // Expected terminal cost state after a recoverable provider failure.
         } else {
@@ -1644,5 +1648,112 @@ struct MenuBarControllerHudCompositionTests {
         #expect(room.cleanup.audioRemovalVerified)
         #expect(room.controller.isRecordingSessionInFlight == false)
         #expect(room.controller.statusText == "Ready")
+    }
+
+    @Test("NonActivatingHudPresenter toggles visibility and respects snapshot state")
+    func nonActivatingHudPresenterLifecycle() async {
+        let presenter = NonActivatingHudPresenter()
+        var stopped = false
+        var cancelled = false
+        presenter.setControlActions(stop: { stopped = true }, cancel: { cancelled = true })
+
+        // Hidden snapshot
+        presenter.present(.hidden)
+
+        // Visible snapshot with pill
+        let visibleSnapshot = CaptureHudSnapshot(
+            isVisible: true,
+            phase: .recording,
+            level: 0.5,
+            elapsedDuration: 3.0,
+            mode: .toggle,
+            message: "Listening...",
+            interimTranscript: "Hello world",
+            statusPill: "⚡ Instant Paste"
+        )
+        presenter.present(visibleSnapshot)
+
+        #expect(!stopped)
+        #expect(!cancelled)
+
+        // Hide again
+        presenter.present(.hidden)
+    }
+
+    @Test("Status pill dismissal via HUD cancel action clears pill, restores Ready status, and hides HUD when session is idle")
+    func statusPillDismissalWhenIdle() async {
+        let room = makeRoom()
+        defer { room.sandbox.clean() }
+
+        // Show a status pill while idle
+        room.controller.statusText = "⚡ Instant Paste"
+        room.controller.microphoneCaptureFeature.showStatusPill("⚡ Instant Paste", autoDismissDelay: nil)
+        #expect(room.hud.isVisible)
+        #expect(room.hud.latest?.statusPill == "⚡ Instant Paste")
+
+        // Clicking cancel in the HUD triggers the cancelAction closure installed by controller
+        room.hud.cancelAction?()
+        await settle { !room.hud.isVisible }
+
+        #expect(!room.hud.isVisible)
+        #expect(room.controller.microphoneCaptureFeature.hudSnapshot.isVisible == false)
+        #expect(room.controller.sessionPhase == .idle)
+        #expect(room.controller.statusText == "Ready")
+        #expect(room.controller.menuBarSystemImageName == "waveform")
+    }
+
+    @Test("SessionPhase accurately drives the menu bar system image across real controller session transitions")
+    func sessionPhaseDrivesMenuBarIconAcrossRealTransitions() async {
+        // 1. Blocked transition: attempt recording when mic permission is denied
+        let blockedProbe = FakeProbe()
+        blockedProbe.microphoneState = .notDetermined
+        blockedProbe.microphoneGranted = false
+        let blockedRoom = makeRoom(probe: blockedProbe)
+        defer { blockedRoom.sandbox.clean() }
+
+        #expect(blockedRoom.controller.sessionPhase == .idle)
+        #expect(blockedRoom.controller.menuBarSystemImageName == "waveform")
+
+        #expect(await blockedRoom.controller.selectProvider(.deepgramStreaming))
+        #expect(await blockedRoom.controller.startInAppRecording() == false)
+        #expect(blockedRoom.controller.sessionPhase == .blocked)
+        #expect(blockedRoom.controller.statusText == "Recording blocked")
+        #expect(blockedRoom.controller.menuBarSystemImageName == "waveform.slash")
+
+        // Reset via HUD cancel control
+        await blockedRoom.controller.handleHudCancelControl()
+        #expect(blockedRoom.controller.sessionPhase == .idle)
+        #expect(blockedRoom.controller.statusText == "Ready")
+        #expect(blockedRoom.controller.menuBarSystemImageName == "waveform")
+
+        // 2. Successful recording start and cancel transitions in active room
+        let activeRoom = makeRoom()
+        defer { activeRoom.sandbox.clean() }
+
+        #expect(await activeRoom.controller.selectProvider(.deepgramStreaming))
+        #expect(await activeRoom.controller.startInAppRecording(mode: .pushToTalk) == true)
+        #expect(activeRoom.controller.sessionPhase == .recording)
+        #expect(activeRoom.controller.menuBarSystemImageName == "waveform.circle.fill")
+
+        #expect(await activeRoom.controller.cancelInAppRecording() == true)
+        #expect(activeRoom.controller.sessionPhase == .idle)
+        #expect(activeRoom.controller.menuBarSystemImageName == "waveform")
+
+        // 3. Refining comes from the routing notice phase, not from the notice text.
+        activeRoom.controller.dualProviderRoutingFeature.onHudNotice?("Working", .refining)
+        #expect(activeRoom.controller.sessionPhase == .refining)
+        #expect(activeRoom.controller.statusText == "Working")
+        #expect(activeRoom.controller.menuBarSystemImageName == "sparkles")
+
+        activeRoom.controller.dualProviderRoutingFeature.onHudNotice?("Done", .status)
+        #expect(activeRoom.controller.sessionPhase == .idle)
+        #expect(activeRoom.controller.menuBarSystemImageName == "waveform")
+
+        #expect(await activeRoom.controller.startInAppRecording(mode: .pushToTalk) == true)
+        activeRoom.factory.session.failNextReceive(with: .transport)
+        await settle { activeRoom.controller.sessionPhase == .failed }
+        #expect(activeRoom.controller.sessionPhase == .failed)
+        #expect(activeRoom.controller.statusText == "Recording failed")
+        #expect(activeRoom.controller.menuBarSystemImageName == "waveform.slash")
     }
 }
