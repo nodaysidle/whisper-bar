@@ -1,8 +1,6 @@
 # WhisperBar
 
-<p align="center">
-  <img src="Resources/AppIcon.png" alt="WhisperBar Icon" width="160" height="160" style="border-radius: 36px; box-shadow: 0 16px 36px rgba(0,0,0,0.4);" />
-</p>
+![WhisperBar: talk faster than you type](docs/whisperbar.gif)
 
 <p align="center">
   <strong>Native, privacy-first macOS menu bar dictation with real-time streaming, smart LLM refinement, and zero dependencies.</strong>
