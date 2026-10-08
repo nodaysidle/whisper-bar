@@ -160,11 +160,28 @@ whisper-bar/
 - Apple Silicon (M1/M2/M3/M4) or Intel Mac
 - Xcode 16.0+ or Swift 6.0+ toolchain
 
+### Installation
+
+Download the prebuilt app from the [latest release (v1.1.2)](https://github.com/nodaysidle/whisper-bar/releases/tag/v1.1.2):
+
+1. Download [WhisperBar.dmg](https://github.com/nodaysidle/whisper-bar/releases/download/v1.1.2/WhisperBar.dmg) (Apple Silicon / arm64, macOS 14+).
+2. Optionally verify the checksum:
+
+```bash
+shasum -a 256 WhisperBar.dmg
+# Expected: 7db0c6d57afac590615b02545ac3198e72754e10eeff587172158adb018b84da
+```
+
+3. Open the DMG and drag `WhisperBar.app` into Applications.
+4. On first launch you may need to right-click the app and choose **Open**, or allow it under **System Settings → Privacy & Security**. The release DMG is ad-hoc signed (not notarized).
+
+To build from source instead, see [Building from Source](#building-from-source).
+
 ### Building from Source
 
 ```bash
 # Clone repository
-git clone https://github.com/your-username/whisper-bar.git
+git clone https://github.com/nodaysidle/whisper-bar.git
 cd whisper-bar
 
 # Run automated tests (all 268 tests pass)
@@ -178,9 +195,7 @@ The resulting build artifacts will be available in:
 - App Bundle: `dist/WhisperBar.app`
 - Disk Image: `dist/WhisperBar.dmg`
 
-### Installation
-
-Copy `dist/WhisperBar.app` directly into your `/Applications` directory:
+Copy `dist/WhisperBar.app` into `/Applications`:
 
 ```bash
 cp -R dist/WhisperBar.app /Applications/
